@@ -1,18 +1,28 @@
-"""Command line: token management (more commands follow in later phases).
+"""Command line for the container.
 
     worklog token create <name> [--scopes write,read]
     worklog token list
     worklog token revoke <name>
+    worklog export [--format md|csv] [--since DATE] [--until DATE] [--project P] [--output FILE]
+    worklog backup [--dir DIR] [--keep 14]
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from .auth import create_token
 from .config import Settings
-from .db import Database
+from .db import Database, utcnow
+from .report import to_csv, to_markdown
+
+
+def _local(value: str, tz) -> datetime:
+    dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=tz)
 
 
 def _fmt(dt, tz) -> str:
@@ -31,6 +41,17 @@ def main(argv: list[str] | None = None) -> int:
     tok.add_parser("list", help="list tokens")
     r = tok.add_parser("revoke", help="revoke a token immediately")
     r.add_argument("name")
+
+    ex = sub.add_parser("export", help="export entries as Markdown or CSV")
+    ex.add_argument("--format", choices=["md", "csv"], default="md")
+    ex.add_argument("--since", help="ISO date, inclusive (default: everything)")
+    ex.add_argument("--until", help="ISO date, exclusive (default: now)")
+    ex.add_argument("--project")
+    ex.add_argument("--output", "-o", help="file instead of stdout")
+
+    bk = sub.add_parser("backup", help="consistent copy of the database; keeps the newest N")
+    bk.add_argument("--dir", help="target directory (default: backups/ next to the database)")
+    bk.add_argument("--keep", type=int, default=14, help="number of backups to keep (default 14)")
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
@@ -55,6 +76,26 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "token" and args.action == "revoke":
             db.revoke_token(args.name)
             print(f"Token '{args.name}' revoked.")
+        elif args.command == "export":
+            since = _local(args.since, tz) if args.since else datetime(1970, 1, 1, tzinfo=tz)
+            until = _local(args.until, tz) if args.until else utcnow() + timedelta(seconds=1)
+            entries = db.entries_between(since, until, project=args.project)
+            text = to_csv(entries, tz) if args.format == "csv" else to_markdown(entries, tz)
+            if args.output:
+                Path(args.output).write_text(text, encoding="utf-8")
+                print(f"{len(entries)} entries written to {args.output}", file=sys.stderr)
+            else:
+                sys.stdout.write(text)
+        elif args.command == "backup":
+            if args.keep < 1:
+                raise ValueError("--keep must be at least 1")
+            target_dir = Path(args.dir) if args.dir else Path(db.path).parent / "backups"
+            target = target_dir / f"worklog-{datetime.now(tz).strftime('%Y%m%d-%H%M%S')}.db"
+            db.backup(target)
+            old = sorted(target_dir.glob("worklog-*.db"))[:-args.keep]
+            for f in old:
+                f.unlink()
+            print(f"backup written: {target} (removed {len(old)} old)")
     except KeyError as e:
         print(f"error: unknown token {e}", file=sys.stderr)
         return 1

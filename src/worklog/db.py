@@ -7,6 +7,7 @@ that they sort and compare correctly as text.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -50,7 +51,31 @@ MIGRATIONS: list[str] = [
         revoked_at   TEXT
     );
     """,
+    # 2: full text search over summary, details, project and tags (external content, kept in sync by triggers)
+    """
+    CREATE VIRTUAL TABLE entries_fts USING fts5(
+        summary, details, project, tags,
+        content='entries', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts (rowid, summary, details, project, tags)
+        VALUES (new.id, new.summary, new.details, new.project, new.tags);
+    END;
+    CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts (entries_fts, rowid, summary, details, project, tags)
+        VALUES ('delete', old.id, old.summary, old.details, old.project, old.tags);
+    END;
+    CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts (entries_fts, rowid, summary, details, project, tags)
+        VALUES ('delete', old.id, old.summary, old.details, old.project, old.tags);
+        INSERT INTO entries_fts (rowid, summary, details, project, tags)
+        VALUES (new.id, new.summary, new.details, new.project, new.tags);
+    END;
+    INSERT INTO entries_fts (entries_fts) VALUES ('rebuild');
+    """,
 ]
+
+BULK_MAX = 500
 
 
 def utcnow() -> datetime:
@@ -263,6 +288,101 @@ class Database:
             rows = self._conn.execute(sql, (*args, limit)).fetchall()
         return [Entry.from_row(r) for r in rows]
 
+    def search_entries(self, query: str, *, project: str | None = None, limit: int = 20) -> list[Entry]:
+        """Full text search. Every word must occur (prefix match); ranked by relevance, then newest."""
+        match = fts_query(query)
+        if not match:
+            raise ValueError("query must contain at least one word")
+        sql = ("SELECT e.* FROM entries_fts f JOIN entries e ON e.id = f.rowid "
+               "WHERE entries_fts MATCH ?")
+        args: list[Any] = [match]
+        if project:
+            sql += " AND e.project = ?"
+            args.append(project)
+        sql += " ORDER BY bm25(entries_fts, 10.0, 3.0, 2.0, 2.0), e.ts DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [Entry.from_row(r) for r in rows]
+
+    def entries_between(self, since: datetime, until: datetime, *, project: str | None = None) -> list[Entry]:
+        """All entries in [since, until), oldest first (for summaries and exports)."""
+        sql = "SELECT * FROM entries WHERE ts >= ? AND ts < ?"
+        args: list[Any] = [to_db_ts(since), to_db_ts(until)]
+        if project:
+            sql += " AND project = ?"
+            args.append(project)
+        sql += " ORDER BY ts, id"
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [Entry.from_row(r) for r in rows]
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT project, COUNT(*) AS n, MAX(ts) AS last_ts, SUM(duration_min) AS minutes "
+                "FROM entries GROUP BY project ORDER BY last_ts DESC"
+            ).fetchall()
+        return [{"project": r["project"], "entries": r["n"], "last_ts": from_db_ts(r["last_ts"]),
+                 "duration_min": r["minutes"] or 0} for r in rows]
+
+    def import_entries(self, agent: str, items: list[dict[str, Any]], *, update: bool = False) -> dict[str, Any]:
+        """Bulk import with external_id. Known ids are skipped, or overwritten with update=True.
+
+        Each item: external_id, ts, project, summary, optional details, tags,
+        duration_min, session_id. Invalid items are reported, the rest is written
+        in one transaction."""
+        if len(items) > BULK_MAX:
+            raise ValueError(f"at most {BULK_MAX} entries per request")
+        result: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+        now = to_db_ts(utcnow())
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for i, item in enumerate(items):
+                    try:
+                        row = _import_row(item)
+                    except (ValueError, TypeError, KeyError) as e:
+                        result["errors"].append({"index": i, "error": str(e)})
+                        continue
+                    existing = self._conn.execute(
+                        "SELECT id FROM entries WHERE external_id = ?", (row["external_id"],)
+                    ).fetchone()
+                    if existing and not update:
+                        result["skipped"] += 1
+                    elif existing:
+                        self._conn.execute(
+                            """UPDATE entries SET ts=?, agent=?, project=?, summary=?, details=?, tags=?,
+                                   duration_min=?, session_id=?, source='import' WHERE id=?""",
+                            (row["ts"], agent, row["project"], row["summary"], row["details"], row["tags"],
+                             row["duration_min"], row["session_id"], existing["id"]),
+                        )
+                        result["updated"] += 1
+                    else:
+                        self._conn.execute(
+                            """INSERT INTO entries (ts, created_at, agent, source, project, summary, details,
+                                                    tags, duration_min, session_id, external_id)
+                               VALUES (?, ?, ?, 'import', ?, ?, ?, ?, ?, ?, ?)""",
+                            (row["ts"], now, agent, row["project"], row["summary"], row["details"], row["tags"],
+                             row["duration_min"], row["session_id"], row["external_id"]),
+                        )
+                        result["created"] += 1
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return result
+
+    def backup(self, target: str | Path) -> None:
+        """Consistent copy via SQLite's online backup API (safe while the server runs)."""
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(str(target))
+        try:
+            with self._lock:
+                self._conn.backup(dest)
+        finally:
+            dest.close()
+
     # ------------------------------------------------------------------ tokens
 
     def add_token(self, name: str, token_hash: str, scopes: Iterable[str]) -> TokenRecord:
@@ -314,6 +434,45 @@ class Database:
             )
 
 
+def fts_query(query: str) -> str:
+    """User text -> safe FTS5 query: every word as a quoted prefix term, all required."""
+    words = re.findall(r"\w+", query or "", flags=re.UNICODE)
+    return " ".join(f'"{w}"*' for w in words)
+
+
+def _import_row(item: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise TypeError("entry must be an object")
+    external_id = str(item.get("external_id") or "").strip()
+    if not external_id or len(external_id) > 200:
+        raise ValueError("external_id is required (max. 200 characters)")
+    if not item.get("ts"):
+        raise ValueError("ts is required")
+    project = str(item.get("project") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    if not project:
+        raise ValueError("project must not be empty")
+    if not summary or len(summary) > SUMMARY_MAX:
+        raise ValueError(f"summary must have 1-{SUMMARY_MAX} characters")
+    duration = item.get("duration_min")
+    if duration is not None and (not isinstance(duration, int) or isinstance(duration, bool) or duration < 0):
+        raise ValueError("duration_min must be a non-negative integer")
+    tags = item.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        raise TypeError("tags must be a list")
+    tag_list = _clean_tags(tags)
+    return {
+        "external_id": external_id,
+        "ts": to_db_ts(parse_ts(str(item["ts"]))),
+        "project": project,
+        "summary": summary,
+        "details": (str(item["details"]) if item.get("details") else None),
+        "tags": json.dumps(tag_list, ensure_ascii=False) if tag_list else None,
+        "duration_min": duration,
+        "session_id": (str(item["session_id"]) if item.get("session_id") else None),
+    }
+
+
 def _clean_tags(tags: Iterable[str] | None) -> list[str]:
     out: list[str] = []
     for t in tags or []:
@@ -324,7 +483,18 @@ def _clean_tags(tags: Iterable[str] | None) -> list[str]:
 
 
 def _split_sql(sql: str) -> list[str]:
-    return [s.strip() for s in sql.split(";") if s.strip()]
+    """Split a migration into statements; keeps CREATE TRIGGER ... BEGIN ... END; together."""
+    out: list[str] = []
+    buf = ""
+    for part in sql.split(";"):
+        buf += part + ";"
+        if sqlite3.complete_statement(buf):
+            if buf.strip(" \n;"):
+                out.append(buf.strip())
+            buf = ""
+    if buf.strip(" \n;"):
+        out.append(buf.strip())
+    return out
 
 
 def as_dict(entry: Entry, tz: Any) -> dict[str, Any]:

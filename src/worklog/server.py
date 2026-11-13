@@ -10,13 +10,13 @@ from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse
 
 from . import __version__
+from .api import register_api
 from .auth import WorklogTokenVerifier, current_agent
 from .config import Settings
 from .db import SUMMARY_MAX, Database, as_dict
+from .report import group_by_day_and_project
 
 INSTRUCTIONS = """\
 Work log for AI agents. Record what you finished with log_entry: one entry per
@@ -71,10 +71,40 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         )
         return [as_dict(e, tz) for e in entries]
 
-    @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
-    async def healthz(request: Request) -> PlainTextResponse:
-        return PlainTextResponse("ok")
+    @mcp.tool(annotations={"title": "Search work entries", "readOnlyHint": True})
+    def search_entries(
+        query: Annotated[str, Field(description="Words to search for in summary, details, project and tags. All words must match; word beginnings are enough ('deploy' finds 'deployment').")],
+        project: Annotated[str | None, Field(description="Only this project.")] = None,
+        limit: Annotated[int, Field(description="Maximum number of results (1-500).", ge=1, le=500)] = 20,
+    ) -> list[dict[str, Any]]:
+        """Full text search in the work log, best matches first."""
+        current_agent("read")
+        return [as_dict(e, tz) for e in db.search_entries(query, project=project, limit=limit)]
 
+    @mcp.tool(annotations={"title": "Summarize a period", "readOnlyHint": True})
+    def summarize_period(
+        since: Annotated[str, Field(description="Start, ISO date or datetime, inclusive, e.g. '2026-11-09'.")],
+        until: Annotated[str, Field(description="End, ISO date or datetime, exclusive, e.g. '2026-11-16' for a full week.")],
+        project: Annotated[str | None, Field(description="Only this project.")] = None,
+    ) -> dict[str, Any]:
+        """Entries of a period grouped by day and project, with durations and totals.
+        Use it as the basis for weekly or monthly reports."""
+        current_agent("read")
+        start, end = _parse_local(since, tz), _parse_local(until, tz)
+        if end <= start:
+            raise ValueError("until must be after since")
+        result = group_by_day_and_project(db.entries_between(start, end, project=project), tz)
+        result["since"], result["until"] = start.isoformat(), end.isoformat()
+        return result
+
+    @mcp.tool(annotations={"title": "List projects", "readOnlyHint": True})
+    def list_projects() -> list[dict[str, Any]]:
+        """Known projects with number of entries, total logged minutes and last entry, most recent first.
+        Use the exact project names from here when logging, so entries end up in the same project."""
+        current_agent("read")
+        return [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()} for p in db.list_projects()]
+
+    register_api(mcp, db, settings)
     return mcp
 
 

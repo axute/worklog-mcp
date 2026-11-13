@@ -2,16 +2,16 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from worklog.db import Database, from_db_ts, to_db_ts
+from worklog.db import MIGRATIONS, Database, from_db_ts, to_db_ts
 
 
 def test_migration_sets_version_and_is_repeatable(tmp_path):
     path = tmp_path / "w.db"
     d = Database(path)
-    assert d.schema_version() == 1
+    assert d.schema_version() == len(MIGRATIONS)
     d.close()
     d = Database(path)  # second open must not fail or re-run
-    assert d.schema_version() == 1
+    assert d.schema_version() == len(MIGRATIONS)
     d.close()
 
 
