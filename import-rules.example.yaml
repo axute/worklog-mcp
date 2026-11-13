@@ -11,3 +11,10 @@ rules:
     keywords: [rsync, restic]
   - project: homelab
     keywords: [docker compose, reverse proxy, traefik]
+
+# Merge project names the summarizer invented (glob patterns on the name).
+aliases:
+  - project: search
+    match: ["algolia*", "*-suche", "search-*"]
+  - project: docs
+    match: ["pandoc*", "markdown*", "pdf-*"]

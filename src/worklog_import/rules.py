@@ -5,6 +5,9 @@
       - project: website
         paths: ["*/website*", "*/homepage*"]
         keywords: [landing page, "css"]
+    aliases:                 # merge project names the summarizer invented
+      - project: search
+        match: ["algolia*", "*-suche"]
 
 First matching rule wins. Paths are glob patterns against the working
 directory; keywords are searched (case-insensitive) in title and prompts.
@@ -34,15 +37,29 @@ class Rule:
 
 
 @dataclass
+class Alias:
+    project: str
+    match: List[str] = field(default_factory=list)  # glob patterns on project names
+
+
+@dataclass
 class Rules:
     default: str = DEFAULT_PROJECT
     rules: List[Rule] = field(default_factory=list)
+    aliases: List[Alias] = field(default_factory=list)
+
+    def canonical(self, project: str) -> str:
+        """Merge project names: the first alias whose pattern matches wins."""
+        for a in self.aliases:
+            if any(fnmatch.fnmatch(project, m) for m in a.match):
+                return a.project
+        return project
 
     def projects(self) -> List[str]:
         out: List[str] = []
-        for r in self.rules:
-            if r.project not in out:
-                out.append(r.project)
+        for name in [r.project for r in self.rules] + [a.project for a in self.aliases]:
+            if name not in out:
+                out.append(name)
         return out
 
     def match_text(self, text: str) -> Optional[str]:
@@ -92,7 +109,12 @@ def _from_data(data: Dict[str, Any]) -> Rules:
         rules.append(Rule(project=str(r["project"]),
                           paths=[str(p) for p in r.get("paths") or []],
                           keywords=[str(k) for k in r.get("keywords") or []]))
-    return Rules(default=str(data.get("default") or DEFAULT_PROJECT), rules=rules)
+    aliases = []
+    for a in data.get("aliases") or []:
+        if not isinstance(a, dict) or not a.get("project"):
+            raise ValueError(f"alias without project: {a!r}")
+        aliases.append(Alias(project=str(a["project"]), match=[str(m) for m in a.get("match") or []]))
+    return Rules(default=str(data.get("default") or DEFAULT_PROJECT), rules=rules, aliases=aliases)
 
 
 def _scalar(v: str) -> Any:

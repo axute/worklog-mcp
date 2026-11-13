@@ -146,8 +146,9 @@ def summarize_simple(s: Session, project: str) -> Dict[str, Any]:
 def to_entries(s: Session, result: Dict[str, Any], project: str, rules: Any = None) -> List[Dict[str, Any]]:
     """Summarizer output -> upload-ready entries with stable external ids.
 
-    Project per entry: a rule matching the entry text wins, then the model's
-    project (normalized), then the session's rule project."""
+    Project per entry: a project the model chose on its own (normalized) wins;
+    if the model was undecided or kept the suggestion, a rule matching the entry
+    text decides, then the session's rule project. Aliases merge names last."""
     from .rules import DEFAULT_PROJECT, normalize_project
     if result.get("skip"):
         return []
@@ -162,10 +163,16 @@ def to_entries(s: Session, result: Dict[str, Any], project: str, rules: Any = No
             datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         except ValueError:
             ts = s.start.isoformat()
-        proj = (rules.match_text(summary + "\n" + details) if rules else None) \
-            or normalize_project(str(e.get("project") or "")) or project
+        model_proj = normalize_project(str(e.get("project") or ""))
+        if model_proj and model_proj not in (DEFAULT_PROJECT, project):
+            proj = model_proj  # the model chose a project on its own: trust it
+        else:
+            # model undecided or just repeated the suggestion: keyword rules on the entry decide
+            proj = (rules.match_text(summary + "\n" + details) if rules else None) or model_proj or project
         if proj == DEFAULT_PROJECT and project != DEFAULT_PROJECT:
             proj = project
+        if rules:
+            proj = rules.canonical(proj)
         entries.append({
             "external_id": f"{s.external_base}:{i}",
             "ts": ts,

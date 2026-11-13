@@ -78,6 +78,17 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     cache = _load_cache(cache_path)
     out_jsonl, out_md = Path(args.out + ".jsonl"), Path(args.out + ".md")
 
+    # project names already used in earlier runs (from the cache), so new summaries reuse them
+    from collections import Counter
+    from .rules import normalize_project
+    seen: Counter = Counter()
+    for res in cache.values():
+        for e in (res.get("entries") or []) if isinstance(res, dict) else []:
+            name = rules.canonical(normalize_project(str(e.get("project") or "")))
+            if name and name != rules.default:
+                seen[name] += 1
+    known = rules.projects() + [n for n, _ in seen.most_common(60) if n not in rules.projects()]
+
     previews: List[Dict[str, Any]] = []
     cost = 0.0
     new_count = 0
@@ -98,7 +109,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         else:
             new_count += 1
             try:
-                result = (summarize_claude(s, project, args.model, known=rules.projects())
+                result = (summarize_claude(s, project, args.model, known=known)
                           if args.summarizer == "claude" else summarize_simple(s, project))
             except Exception as e:  # keep going, report at the end
                 print(f"{label} FAILED: {e}", file=sys.stderr)

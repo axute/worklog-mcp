@@ -274,3 +274,17 @@ def test_prepare_in_stages_with_max_new(tmp_path, monkeypatch, capsys):
         counts.append(len(Path("import-preview.jsonl").read_text(encoding="utf-8").splitlines()))
     assert counts == [2, 4, 5, 5]
     assert "all sessions summarized" in err
+
+
+def test_aliases_merge_project_names(tmp_path):
+    from worklog_import.sources import Session, Turn
+    f = tmp_path / "r.yaml"
+    f.write_text("default: unsortiert\nrules:\n  - project: media\n    keywords: [jellyfin]\n"
+                 "aliases:\n  - project: search\n    match: [\"algolia*\", \"*-suche\"]\n"
+                 "  - project: docs\n    match: [pandoc*, markdown*]\n", encoding="utf-8")
+    rules = load_rules(f)
+    assert rules.projects() == ["media", "search", "docs"]
+    s = Session("copilot", "c", T0, T0, turns=[Turn(T0, "p")])
+    res = {"skip": False, "entries": [{"ts": T0.isoformat(), "summary": "x", "project": p}
+                                      for p in ["Algolia PHP", "webseiten-suche", "pandoc-pdf", "anderes"]]}
+    assert [e["project"] for e in to_entries(s, res, "unsortiert", rules)] == ["search", "search", "docs", "anderes"]
