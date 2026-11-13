@@ -215,3 +215,21 @@ def test_upload_needs_token(monkeypatch, tmp_path):
     (tmp_path / "p.jsonl").write_text("")
     with pytest.raises(SystemExit, match="WORKLOG_TOKEN"):
         cli.main(["upload", "--url", "http://x", "--file", str(tmp_path / "p.jsonl")])
+
+
+def test_project_normalization_and_entry_rules(tmp_path):
+    from worklog_import.rules import Rule, Rules, normalize_project
+    from worklog_import.sources import Session, Turn
+    assert normalize_project("Garten Bewässerung") == "garten-bewässerung"
+    assert normalize_project(" label.presets ") == "label.presets"
+    assert normalize_project("3D-Druck") == "3d-druck"
+    rules = Rules(rules=[Rule("media-server", keywords=["jellyfin"]), Rule("garten", keywords=["bewässerung"])])
+    s = Session("claude-ai", "c1", T0, T0, title="Haus", turns=[Turn(T0, "p")])
+    result = {"skip": False, "entries": [
+        {"ts": T0.isoformat(), "summary": "Jellyfin startet nur mit NAS-Mount", "project": "unsortiert"},
+        {"ts": T0.isoformat(), "summary": "Neuer Rasenmäher bestellt", "project": "Garten Werkzeug"},
+        {"ts": T0.isoformat(), "summary": "Etwas ganz anderes", "project": "unsortiert"},
+    ]}
+    entries = to_entries(s, result, "garten", rules)
+    assert [e["project"] for e in entries] == ["media-server", "garten-werkzeug", "garten"]
+    assert rules.projects() == ["media-server", "garten"]

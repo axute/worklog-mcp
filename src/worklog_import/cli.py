@@ -87,7 +87,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             print(f"{label} (cache)", file=sys.stderr)
         else:
             try:
-                result = summarize_claude(s, project, args.model) if args.summarizer == "claude" else summarize_simple(s, project)
+                result = (summarize_claude(s, project, args.model, known=rules.projects())
+                          if args.summarizer == "claude" else summarize_simple(s, project))
             except Exception as e:  # keep going, report at the end
                 print(f"{label} FAILED: {e}", file=sys.stderr)
                 previews.append({"session": s, "project": project, "error": str(e), "entries": []})
@@ -96,7 +97,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             cache[key] = result
             _save_json(cache_path, cache)
             print(f"{label} -> {'skip' if result.get('skip') else len(result.get('entries') or [])}", file=sys.stderr)
-        previews.append({"session": s, "project": project, "result": result, "entries": to_entries(s, result, project)})
+        previews.append({"session": s, "project": project, "result": result,
+                         "entries": to_entries(s, result, project, rules)})
 
     with open(out_jsonl, "w", encoding="utf-8") as f:
         for p in previews:

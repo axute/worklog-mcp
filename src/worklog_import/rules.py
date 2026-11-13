@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,6 +38,20 @@ class Rules:
     default: str = DEFAULT_PROJECT
     rules: List[Rule] = field(default_factory=list)
 
+    def projects(self) -> List[str]:
+        out: List[str] = []
+        for r in self.rules:
+            if r.project not in out:
+                out.append(r.project)
+        return out
+
+    def match_text(self, text: str) -> Optional[str]:
+        text = text.lower()
+        for r in self.rules:
+            if any(k.lower() in text for k in r.keywords):
+                return r.project
+        return None
+
     def match(self, s: Session) -> Optional[str]:
         text = (s.title + "\n" + "\n".join(t.prompt for t in s.turns[:20])).lower()
         for r in self.rules:
@@ -45,6 +60,13 @@ class Rules:
             if any(k.lower() in text for k in r.keywords):
                 return r.project
         return None
+
+
+def normalize_project(name: str) -> str:
+    """'Heizung Smart Home' -> 'heizung-smart-home'; keeps dots ('label.presets')."""
+    n = re.sub(r"[\s_/]+", "-", (name or "").strip().lower())
+    n = re.sub(r"[^a-z0-9äöüß.-]", "", n)
+    return re.sub(r"-{2,}", "-", n).strip("-.")
 
 
 def load_rules(path: Optional[Path]) -> Rules:

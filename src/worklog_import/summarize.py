@@ -57,8 +57,10 @@ Rules:
 - Write in the language the user wrote in.
 - ts: copy the timestamp of the prompt in which the result was reached.
 - duration_min: rough estimate from the timestamps.
-- project: short project or topic name; suggested project: "{project}". Keep it
-  unless the session is clearly about something else.
+- project: short project name, lowercase with hyphens (e.g. "home-assistant").
+  Known projects: {known}. Use one of them whenever it fits; the session's suggested
+  project is "{project}". If none fits, invent a short new lowercase name for the
+  topic. Use "unsortiert" only if the topic is really unclear.
 - tags: up to 5 short lowercase tags.
 - Never include secrets, tokens, passwords, personal data of others. Text marked
   [REDACTED] stays redacted.
@@ -91,9 +93,11 @@ def session_text(s: Session) -> str:
     return text
 
 
-def summarize_claude(s: Session, project: str, model: Optional[str] = None, timeout: int = 300) -> Dict[str, Any]:
+def summarize_claude(s: Session, project: str, model: Optional[str] = None, timeout: int = 300,
+                     known: Optional[List[str]] = None) -> Dict[str, Any]:
     body, redactions = redact(session_text(s))
-    prompt = PROMPT.format(max_entries=MAX_ENTRIES, project=project, source=s.source,
+    prompt = PROMPT.format(max_entries=MAX_ENTRIES, project=project, known=", ".join(known or []) or "none",
+                           source=s.source,
                            start=s.start.isoformat(), end=s.end.isoformat(), body=body)
     cmd = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--settings", '{"disableAllHooks": true}',
            "--disable-slash-commands", "--no-session-persistence", "--output-format", "json",
@@ -132,8 +136,12 @@ def summarize_simple(s: Session, project: str) -> Dict[str, Any]:
     }]}
 
 
-def to_entries(s: Session, result: Dict[str, Any], project: str) -> List[Dict[str, Any]]:
-    """Summarizer output -> upload-ready entries with stable external ids."""
+def to_entries(s: Session, result: Dict[str, Any], project: str, rules: Any = None) -> List[Dict[str, Any]]:
+    """Summarizer output -> upload-ready entries with stable external ids.
+
+    Project per entry: a rule matching the entry text wins, then the model's
+    project (normalized), then the session's rule project."""
+    from .rules import DEFAULT_PROJECT, normalize_project
     if result.get("skip"):
         return []
     entries = []
@@ -147,10 +155,14 @@ def to_entries(s: Session, result: Dict[str, Any], project: str) -> List[Dict[st
             datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         except ValueError:
             ts = s.start.isoformat()
+        proj = (rules.match_text(summary + "\n" + details) if rules else None) \
+            or normalize_project(str(e.get("project") or "")) or project
+        if proj == DEFAULT_PROJECT and project != DEFAULT_PROJECT:
+            proj = project
         entries.append({
             "external_id": f"{s.external_base}:{i}",
             "ts": ts,
-            "project": (str(e.get("project") or "").strip() or project),
+            "project": proj,
             "summary": summary,
             "details": details or None,
             "tags": [str(t).strip().lower() for t in (e.get("tags") or []) if str(t).strip()][:5],
