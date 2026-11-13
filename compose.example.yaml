@@ -1,0 +1,40 @@
+# Example stack behind Traefik. Copy to compose.yaml (not tracked) and either
+# fill in the values or put them into a .env file next to it (see .env.example).
+#
+#   docker compose up -d --build
+#   docker exec -it worklog-mcp worklog token create <agent-name>
+#
+# No port is published: the container is only reachable through Traefik.
+# Do not add a compress middleware to this router; it can buffer streamed
+# MCP responses.
+
+services:
+  worklog:
+    build: ${WORKLOG_SRC:-.}
+    image: worklog-mcp:local
+    container_name: worklog-mcp
+    restart: unless-stopped
+    environment:
+      TZ: ${WORKLOG_TZ:-Europe/Berlin}
+      WORKLOG_DB: /data/worklog.db
+    volumes:
+      # use a path directly on a pool/disk, not a FUSE/union mount: SQLite locks need a real file system
+      - ${WORKLOG_DATA:?set WORKLOG_DATA}:/data
+    networks:
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:?set TRAEFIK_NETWORK}
+      traefik.http.routers.worklog.rule: Host(`${WORKLOG_HOST:?set WORKLOG_HOST}`)
+      # entrypoints / TLS: only needed when Traefik has no default entrypoint with a cert resolver
+      # traefik.http.routers.worklog.entrypoints: websecure
+      # traefik.http.routers.worklog.tls.certresolver: letsencrypt
+      traefik.http.routers.worklog.middlewares: worklog-headers
+      traefik.http.services.worklog.loadbalancer.server.port: "8000"
+      traefik.http.middlewares.worklog-headers.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.worklog-headers.headers.contentTypeNosniff: "true"
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK:?set TRAEFIK_NETWORK}
+    external: true

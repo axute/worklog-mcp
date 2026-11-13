@@ -7,7 +7,7 @@ An MCP server that collects work log entries from AI agents (Claude Code, Docker
 - SQLite storage (WAL), tokens stored only as SHA-256 hashes
 - Times stored in UTC, shown in the configured time zone
 
-> Status: early development. Core server, all tools, REST API and CLI are done. Container setup, agent integration and the importer follow.
+> Status: early development. Server, tools, REST API, CLI and container setup are done. Agent integration and the importer follow.
 
 ## Tools
 
@@ -65,6 +65,18 @@ worklog export --since 2026-11-09 --until 2026-11-16              # Markdown, gr
 worklog export --format csv --project website -o website.csv
 worklog backup --keep 14   # consistent copy to backups/ next to the database, keeps the newest 14
 ```
+
+## Deployment (Docker + Traefik)
+
+1. Create a data directory on a real file system, e.g. directly on a pool or disk. SQLite file locks are unreliable on FUSE/union mounts (on Unraid: use `/mnt/cache/...` or `/mnt/diskN/...`, not `/mnt/user/...`). On Unraid give it to `nobody:users`: `chown 99:100 <dir>`.
+2. `cp compose.example.yaml compose.yaml` and `cp .env.example .env`, then set `WORKLOG_HOST`, `TRAEFIK_NETWORK`, `WORKLOG_DATA` (and `WORKLOG_SRC` if the stack file lives outside the repository). Both files are ignored by git.
+3. `docker compose up -d --build`, then check `docker inspect --format '{{.State.Health.Status}}' worklog-mcp` → `healthy`.
+4. Create a token per agent: `docker exec -it worklog-mcp worklog token create <agent-name>`.
+5. `curl -i https://<host>/mcp` without a token must answer `401`.
+
+The container publishes no port; it is reachable only through Traefik on the given network. The image runs as `99:100`. Don't put a `compress` middleware on the router: it can buffer streamed MCP responses.
+
+Nightly backup, e.g. via cron or the Unraid User Scripts plugin: `docker exec worklog-mcp worklog backup --keep 14` (writes to `backups/` in the data directory).
 
 ## Configuration
 
