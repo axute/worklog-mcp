@@ -1,0 +1,28 @@
+# local configuration and secrets (infrastructure values live only here)
+.env
+*.env.local
+compose.yaml
+compose.override.yaml
+
+# planning notes are kept outside the public repo
+PLAN.md
+*.plan.md
+
+# data
+*.db
+*.db-wal
+*.db-shm
+data/
+backups/
+import-preview.jsonl
+import-preview.md
+import-rules.yaml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
