@@ -259,3 +259,18 @@ def test_copilot_csv(tmp_path):
     assert [s.external_base for s in again] == [s.external_base for s in sessions]  # stable ids
     with pytest.raises(ValueError, match="time zone"):
         list(copilot_sessions(f, tz="Mars/Base"))
+
+
+def test_prepare_in_stages_with_max_new(tmp_path, monkeypatch, capsys):
+    projects = tmp_path / "projects"
+    for i in range(5):
+        write_cc_session(projects, f"stage-{i}")
+    monkeypatch.chdir(tmp_path)
+    args = ["prepare", "--path", str(projects), "--summarizer", "none", "--min-age-hours", "0", "--max-new", "2"]
+    counts = []
+    for _ in range(4):
+        cli.main(args)
+        err = capsys.readouterr().err
+        counts.append(len(Path("import-preview.jsonl").read_text(encoding="utf-8").splitlines()))
+    assert counts == [2, 4, 5, 5]
+    assert "all sessions summarized" in err

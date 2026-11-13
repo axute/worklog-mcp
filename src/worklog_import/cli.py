@@ -80,6 +80,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
     previews: List[Dict[str, Any]] = []
     cost = 0.0
+    new_count = 0
+    pending = 0
     print(f"{len(sessions)} sessions ({args.source}), summarizer: {args.summarizer}", file=sys.stderr)
     for n, s in enumerate(sessions, 1):
         project = rules.match(s) or rules.default
@@ -90,7 +92,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         if cached:
             result = cached
             print(f"{label} (cache)", file=sys.stderr)
+        elif args.max_new is not None and new_count >= args.max_new:
+            pending += 1  # left for the next run
+            continue
         else:
+            new_count += 1
             try:
                 result = (summarize_claude(s, project, args.model, known=rules.projects())
                           if args.summarizer == "claude" else summarize_simple(s, project))
@@ -117,7 +123,13 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     print(f"\n{entries} entries from {len(previews)} sessions ({skipped} skipped as private/no result, {failed} failed)",
           file=sys.stderr)
     if cost:
-        print(f"claude -p cost (estimate): ${cost:.2f}", file=sys.stderr)
+        print(f"claude -p usage (API price equivalent, on a subscription it counts against the plan's limits): "
+              f"${cost:.2f}", file=sys.stderr)
+    if pending:
+        print(f"{pending} sessions not summarized yet (--max-new {args.max_new}); run the same command again "
+              f"to continue. The preview contains only the summarized ones.", file=sys.stderr)
+    else:
+        print("all sessions summarized.", file=sys.stderr)
     print(f"review: {out_md}\nupload: worklog-import upload --file {out_jsonl}", file=sys.stderr)
     return 1 if failed else 0
 
@@ -206,6 +218,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     pr.add_argument("--summarizer", choices=["claude", "none"], default="claude")
     pr.add_argument("--model", help="model for claude -p (default: your Claude Code default)")
     pr.add_argument("--limit", type=int, help="only the oldest N sessions (for a trial run)")
+    pr.add_argument("--max-new", type=int, help="summarize at most N sessions that are not in the cache yet "
+                                                "(run in stages; repeat the same command to continue)")
     pr.add_argument("--exclude", nargs="*", help="session ids (or prefixes) to leave out")
     pr.add_argument("--min-age-hours", type=float, default=2.0,
                     help="skip sessions active in the last N hours, they may still be running (default 2)")
