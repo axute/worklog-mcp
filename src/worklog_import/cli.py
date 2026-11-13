@@ -28,7 +28,7 @@ from . import __version__
 from .rules import load_rules
 from .sources import (Session, claude_ai_sessions, claude_code_sessions, copilot_sessions,
                       default_claude_dir, filter_sessions, parse_ts)
-from .summarize import summarize_claude, summarize_simple, to_entries
+from .summarize import PROMPT_VERSION, summarize_claude, summarize_simple, to_entries
 from .upload import upload
 
 
@@ -83,7 +83,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     print(f"{len(sessions)} sessions ({args.source}), summarizer: {args.summarizer}", file=sys.stderr)
     for n, s in enumerate(sessions, 1):
         project = rules.match(s) or rules.default
-        key = f"{s.external_base}@{s.fingerprint()}:{args.summarizer}"
+        key = (f"{s.external_base}@{s.fingerprint()}:{args.summarizer}" + (f":{args.model}" if args.model else "")
+               + (f":p{PROMPT_VERSION}" if args.summarizer == "claude" else ""))
         cached = cache.get(key)
         label = f"[{n}/{len(sessions)}] {s.start:%Y-%m-%d} {s.title[:60]!r}"
         if cached:

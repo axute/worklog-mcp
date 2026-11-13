@@ -19,6 +19,7 @@ from .secrets import redact
 from .sources import Session
 
 MAX_INPUT_CHARS = 60_000
+PROMPT_VERSION = "3"  # part of the cache key: changing the prompt re-summarizes
 MAX_ENTRIES = 8
 
 SCHEMA = {
@@ -50,8 +51,10 @@ PROMPT = """\
 You write entries for a personal work log from a past AI chat session.
 
 Rules:
-- One entry per finished result (feature, fix, configuration change, research result,
-  decision), at most {max_entries}. A short session usually has exactly one entry.
+- One entry per topic the user worked on, not per question: combine related small
+  questions (commands, how-tos, follow-ups on the same thing) into one entry that
+  names the outcome. Aim for 1-3 entries per session; more (up to {max_entries}) only
+  when a long session really covers clearly separate topics.
 - summary: one sentence, max. 300 characters, what is different now (the result,
   not the process). details: important commands, files, decisions and reasons.
 - Write in the language the user wrote in.
@@ -64,8 +67,12 @@ Rules:
 - tags: up to 5 short lowercase tags.
 - Never include secrets, tokens, passwords, personal data of others. Text marked
   [REDACTED] stays redacted.
-- Set skip=true (and entries=[]) for private or non-work conversations, small talk,
-  and sessions without a result.
+- What counts as a result: a working setup or fix, a found cause, a decision, and
+  also a researched answer or how-to the user got (e.g. "Clarified how X works",
+  "Researched options for Y"), even for a single question about a technical topic.
+- Set skip=true (and entries=[]) only for private matters (family, health, finances,
+  shopping, hobbies unrelated to IT projects), small talk, and sessions that ended
+  without any usable answer.
 
 Session ({source}, {start} - {end}):
 {body}
