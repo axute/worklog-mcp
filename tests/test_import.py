@@ -67,6 +67,7 @@ def test_redact(text, kind):
     "Traefik-Router für website eingerichtet, Port 8080, Datei src/worklog/db.py geändert.",
     "Token angelegt und Passwort zurückgesetzt, secret santa geplant.",
     "Der API key wird über die Einstellungen gesetzt.",
+    "Systeme mit OAuth: Booked Scheduler, MRBS und Kimai.",
 ])
 def test_redact_keeps_normal_text(text):
     assert redact(text) == (text, 0)
@@ -233,3 +234,28 @@ def test_project_normalization_and_entry_rules(tmp_path):
     entries = to_entries(s, result, "garten", rules)
     assert [e["project"] for e in entries] == ["media-server", "garten-werkzeug", "garten"]
     assert rules.projects() == ["media-server", "garten"]
+
+
+def test_copilot_csv(tmp_path):
+    from worklog_import.sources import copilot_sessions
+    f = tmp_path / "copilot.csv"
+    f.write_text(
+        "\ufeffConversation,Time,Author,Message\n"
+        "Gartenplanung,2026-03-02T09:05:00,AI,Antwort 2\n"
+        "Gartenplanung,2026-03-02T09:00:00,Human,Welche Pflanzen?\n"
+        "Gartenplanung,2026-03-02T09:00:00,AI,Antwort 1\n"
+        "Gartenplanung,2026-03-02T09:04:00,Human,\"Und, mit Komma?\"\n"
+        "Gartenplanung,2026-03-05T18:00:00,Human,Neue Frage Tage später\n"
+        "Rezept,2026-03-03T12:00:00,Human,Kuchen\n"
+        "Rezept,kaputt,Human,x\n",
+        encoding="utf-8")
+    sessions = sorted(copilot_sessions(f, tz="Europe/Berlin"), key=lambda s: s.start)
+    assert [(s.title, len(s.turns)) for s in sessions] == [("Gartenplanung", 2), ("Rezept", 1), ("Gartenplanung", 1)]
+    first = sessions[0]
+    assert first.start == datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)  # 09:00 Berlin
+    assert first.turns[0].reply == "Antwort 1" and first.turns[1].prompt == "Und, mit Komma?"
+    assert first.external_base.startswith("copilot:")
+    again = sorted(copilot_sessions(f, tz="Europe/Berlin"), key=lambda s: s.start)
+    assert [s.external_base for s in again] == [s.external_base for s in sessions]  # stable ids
+    with pytest.raises(ValueError, match="time zone"):
+        list(copilot_sessions(f, tz="Mars/Base"))

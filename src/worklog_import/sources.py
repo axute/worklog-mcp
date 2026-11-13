@@ -196,6 +196,61 @@ def claude_ai_sessions(path: Path) -> Iterator[Session]:
                       title=(conv.get("name") or turns[0].prompt.splitlines()[0])[:120], turns=turns)
 
 
+# ------------------------------------------------------------------ Microsoft Copilot (CSV)
+
+def copilot_sessions(path: Path, tz: str = "UTC", gap_hours: float = 6.0) -> Iterator[Session]:
+    """Copilot activity export (CSV: Conversation, Time, Author, Message).
+
+    The export has no conversation id and no time zone: rows are grouped by
+    title and split where the pause is longer than gap_hours; times are read
+    in `tz`. The id is derived from title and start time, so re-imports of the
+    same export find the same ids."""
+    import csv
+    from collections import defaultdict
+    from datetime import timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo(tz)
+    except Exception as e:  # zoneinfo missing or unknown name
+        raise ValueError(f"unknown time zone '{tz}': {e}") from e
+
+    rows_by_title: Dict[str, List[Any]] = defaultdict(list)
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            title = (row.get("Conversation") or "").strip()
+            raw = (row.get("Time") or "").strip()
+            try:
+                when = datetime.fromisoformat(raw)
+            except ValueError:
+                continue
+            when = (when if when.tzinfo else when.replace(tzinfo=zone)).astimezone(timezone.utc)
+            author = (row.get("Author") or "").strip().lower()
+            rows_by_title[title].append((when, 0 if author in ("human", "user") else 1, author, row.get("Message") or ""))
+
+    gap = timedelta(hours=gap_hours)
+    for title, rows in rows_by_title.items():
+        rows.sort(key=lambda r: (r[0], r[1]))
+        groups: List[List[Any]] = [[rows[0]]]
+        for prev, cur in zip(rows, rows[1:]):
+            if cur[0] - prev[0] > gap:
+                groups.append([])
+            groups[-1].append(cur)
+        for group in groups:
+            turns: List[Turn] = []
+            for when, _, author, text in group:
+                text = text.strip()
+                if author in ("human", "user") and text:
+                    turns.append(Turn(ts=when, prompt=text))
+                elif turns and text:
+                    turns[-1].reply = text
+            if not turns:
+                continue
+            start = group[0][0]
+            sid = hashlib.sha1(f"{title}|{start.isoformat()}".encode("utf-8")).hexdigest()[:16]
+            yield Session(source="copilot", session_id=sid, start=start, end=group[-1][0],
+                          title=(title or turns[0].prompt.splitlines()[0])[:120], turns=turns)
+
+
 def default_claude_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "projects"
 

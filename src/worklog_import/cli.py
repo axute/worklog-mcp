@@ -26,8 +26,8 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__
 from .rules import load_rules
-from .sources import (Session, claude_ai_sessions, claude_code_sessions, default_claude_dir,
-                      filter_sessions, parse_ts)
+from .sources import (Session, claude_ai_sessions, claude_code_sessions, copilot_sessions,
+                      default_claude_dir, filter_sessions, parse_ts)
 from .summarize import summarize_claude, summarize_simple, to_entries
 from .upload import upload
 
@@ -58,10 +58,14 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     if args.source == "claude-code":
         root = Path(args.path).expanduser() if args.path else default_claude_dir()
         sessions_iter = claude_code_sessions(root)
-    else:
+    elif args.source == "claude-ai":
         if not args.path:
             raise SystemExit("error: --path to the claude.ai export (ZIP, folder or conversations.json) is required")
         sessions_iter = claude_ai_sessions(Path(args.path).expanduser())
+    else:
+        if not args.path:
+            raise SystemExit("error: --path to the Copilot activity CSV is required")
+        sessions_iter = copilot_sessions(Path(args.path).expanduser(), tz=args.tz, gap_hours=args.gap_hours)
 
     sessions: List[Session] = list(filter_sessions(
         sessions_iter, _date(args.since), _date(args.until), args.min_age_hours, args.exclude or []))
@@ -189,8 +193,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pr = sub.add_parser("prepare", help="extract, summarize and write a preview")
-    pr.add_argument("--source", choices=["claude-code", "claude-ai"], default="claude-code")
-    pr.add_argument("--path", help="claude-code: projects folder (default ~/.claude/projects); claude-ai: export ZIP/folder/json")
+    pr.add_argument("--source", choices=["claude-code", "claude-ai", "copilot"], default="claude-code")
+    pr.add_argument("--path", help="claude-code: projects folder (default ~/.claude/projects); "
+                                   "claude-ai: export ZIP/folder/json; copilot: activity CSV")
+    pr.add_argument("--tz", default="UTC", help="copilot: time zone of the CSV times (default UTC)")
+    pr.add_argument("--gap-hours", type=float, default=6.0,
+                    help="copilot: start a new session after a pause this long within one title (default 6)")
     pr.add_argument("--since", help="only sessions that ended on/after this date")
     pr.add_argument("--until", help="only sessions that started before this date")
     pr.add_argument("--rules", help="import-rules.yaml (or .json)")

@@ -23,7 +23,7 @@ PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # key = value / key: value for typical secret names
     ("assignment", re.compile(
         r"(?i)\b((?:[a-z0-9_.-]*?)(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
-        r"client[_-]?secret|private[_-]?key|auth|credential)s?[a-z0-9_.-]*)"
+        r"client[_-]?secret|private[_-]?key|auth[_-]?token|credential)s?[a-z0-9_.-]*)"
         r"(\s*[:=]\s*)(['\"]?)(?!\[REDACTED)([^\s'\"]{6,})\3"
     )),
     # long random-looking strings (hex >= 32, base64-ish >= 40 with mixed classes)
