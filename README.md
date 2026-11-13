@@ -7,7 +7,7 @@ An MCP server that collects work log entries from AI agents (Claude Code, Docker
 - SQLite storage (WAL), tokens stored only as SHA-256 hashes
 - Times stored in UTC, shown in the configured time zone
 
-> Status: early development. Server, tools, REST API, CLI and container setup are done. Agent integration and the importer follow.
+> Status: server, tools, REST API, CLI, container setup and importer are done.
 
 ## Tools
 
@@ -77,6 +77,32 @@ worklog backup --keep 14   # consistent copy to backups/ next to the database, k
 The container publishes no port; it is reachable only through Traefik on the given network. The image runs as `99:100`. Don't put a `compress` middleware on the router: it can buffer streamed MCP responses.
 
 Nightly backup, e.g. via cron or the Unraid User Scripts plugin: `docker exec worklog-mcp worklog backup --keep 14` (writes to `backups/` in the data directory).
+
+## Importing earlier sessions
+
+`worklog-import` turns past Claude Code sessions and claude.ai conversations into entries, with their original time stamps. It runs where the data lives (usually your workstation), needs only Python 3.9+ and no extra packages, and uploads finished summaries only – never raw transcripts.
+
+```bash
+# from a checkout, without installing:
+export PYTHONPATH=/path/to/worklog-mcp/src
+cp import-rules.example.yaml import-rules.yaml   # map folders/keywords to projects
+
+# 1. extract + summarize -> import-preview.jsonl and import-preview.md
+python -m worklog_import prepare --rules import-rules.yaml --since 2026-10-01 --limit 10
+python -m worklog_import prepare --source claude-ai --path ~/Downloads/data-export.zip --rules import-rules.yaml
+
+# 2. read import-preview.md; delete lines in import-preview.jsonl or set "skip": true
+
+# 3. upload (token with scope write)
+export WORKLOG_URL=https://worklog.example.com WORKLOG_TOKEN=wl_...
+python -m worklog_import upload            # --update overwrites already imported entries
+```
+
+- **Sources:** Claude Code transcripts in `~/.claude/projects/*/*.jsonl` (subagent transcripts are ignored, sessions active in the last 2 hours are skipped), and the claude.ai data export (*Settings → Privacy → Export data*; ZIP, folder or `conversations.json`).
+- **Summaries:** by default with `claude -p`, isolated from your setup (no tools, no MCP servers, no hooks, no session file), so it can never write to the log itself; one entry per result, up to 8 per session, private or trivial conversations are marked as skipped. `--summarizer none` makes one entry per session from the first prompt, without AI.
+- **Secrets:** tokens, keys, passwords, private keys, JWTs, credentials in URLs and long random strings are replaced with `[REDACTED:…]` before anything is summarized or uploaded. Check the preview anyway.
+- **Repeatable:** summaries are cached in `import-cache.json`; entries carry `external_id` `claude-code:<session>:<n>` / `claude-ai:<uuid>:<n>`, so running the import again only adds new sessions.
+- Claude Code deletes local transcripts after 30 days by default. Set `"cleanupPeriodDays": 3650` in `~/.claude/settings.json` to keep them.
 
 ## Configuration
 

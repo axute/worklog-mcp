@@ -17,6 +17,9 @@ backups/
 import-preview.jsonl
 import-preview.md
 import-rules.yaml
+import-cache.json
+check.jsonl
+check.md
 
 # python
 __pycache__/

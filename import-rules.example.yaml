@@ -1,0 +1,13 @@
+# Copy to import-rules.yaml (not tracked) and adapt.
+# First matching rule wins. paths: glob patterns against the session's working
+# directory (Claude Code). keywords: searched in title and prompts (case-insensitive).
+default: unsortiert
+rules:
+  - project: website
+    paths: ["*/website*", "*/homepage*"]
+    keywords: [landing page, start page]
+  - project: backup-scripts
+    paths: ["*/backup*"]
+    keywords: [rsync, restic]
+  - project: homelab
+    keywords: [docker compose, reverse proxy, traefik]
