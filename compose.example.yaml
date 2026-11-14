@@ -20,6 +20,8 @@ services:
     volumes:
       # use a path directly on a pool/disk, not a FUSE/union mount: SQLite locks need a real file system
       - ${WORKLOG_DATA:?set WORKLOG_DATA}:/data
+      # optional: a separate backup target, used with `worklog backup --dir /backups`
+      # - ${WORKLOG_BACKUPS}:/backups
     networks:
       - traefik
     labels:

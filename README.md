@@ -76,7 +76,7 @@ worklog backup --keep 14   # consistent copy to backups/ next to the database, k
 
 The container publishes no port; it is reachable only through Traefik on the given network. The image runs as `99:100`. Don't put a `compress` middleware on the router: it can buffer streamed MCP responses.
 
-Nightly backup, e.g. via cron or the Unraid User Scripts plugin: `docker exec worklog-mcp worklog backup --keep 14` (writes to `backups/` in the data directory).
+Nightly backup, e.g. via cron or the Unraid User Scripts plugin: `docker exec worklog-mcp worklog backup --keep 14` (writes to `backups/` in the data directory). To keep backups elsewhere, mount a second volume (see `compose.example.yaml`) and use `--dir /backups`; the directory must be writable for UID 99 / GID 100.
 
 ## Importing earlier sessions
 
