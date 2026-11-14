@@ -28,7 +28,9 @@ class LimitReached(RuntimeError):
 def _is_limit(text: str, status: Any = None) -> bool:
     t = (text or "").lower()
     return str(status) == "429" or "hit your" in t and "limit" in t or "usage limit" in t or "rate limit" in t
-PROMPT_VERSION = "3"  # part of the cache key: changing the prompt re-summarizes
+# part of the cache key: changing it re-summarizes everything. Not bumped for the
+# project-naming wording (v3 -> specific names), so existing caches stay usable.
+PROMPT_VERSION = "3"
 MAX_ENTRIES = 8
 
 SCHEMA = {
@@ -75,10 +77,12 @@ Rules:
 - Write in the language the user wrote in.
 - ts: copy the timestamp of the prompt in which the result was reached.
 - duration_min: rough estimate from the timestamps.
-- project: short project name, lowercase with hyphens (e.g. "home-assistant").
-  Known projects: {known}. Use one of them whenever it fits; the session's suggested
-  project is "{project}". If none fits, invent a short new lowercase name for the
-  topic. Use "unsortiert" only if the topic is really unclear.
+- project: short, specific project name, lowercase with hyphens, named after the
+  concrete thing worked on (product, tool or system, e.g. "vaultwarden", "home-assistant",
+  "nextcloud"), not a broad category like "linux", "pc" or "web-development".
+  Known projects: {known}. Reuse a known name only if it is exactly the same thing;
+  the session's suggested project is "{project}". Otherwise invent a new specific
+  name. Use "unsortiert" only if the topic is really unclear.
 - tags: up to 5 short lowercase tags.
 - Never include secrets, tokens, passwords, personal data of others. Text marked
   [REDACTED] stays redacted.
