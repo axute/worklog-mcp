@@ -19,6 +19,15 @@ from .secrets import redact
 from .sources import Session
 
 MAX_INPUT_CHARS = 60_000
+
+
+class LimitReached(RuntimeError):
+    """Usage or rate limit of the Claude plan: stop the whole run, don't keep trying."""
+
+
+def _is_limit(text: str, status: Any = None) -> bool:
+    t = (text or "").lower()
+    return str(status) == "429" or "hit your" in t and "limit" in t or "usage limit" in t or "rate limit" in t
 PROMPT_VERSION = "3"  # part of the cache key: changing the prompt re-summarizes
 MAX_ENTRIES = 8
 
@@ -122,11 +131,15 @@ def summarize_claude(s: Session, project: str, model: Optional[str] = None, time
     workdir = Path(tempfile.gettempdir()) / "worklog-import-claude"
     workdir.mkdir(exist_ok=True)
     proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=workdir)
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude -p failed ({proc.returncode}): {(proc.stderr or proc.stdout)[-500:]}")
-    out = json.loads(proc.stdout)
-    if out.get("is_error"):
-        raise RuntimeError(f"claude -p error: {str(out.get('result'))[:500]}")
+    try:
+        out = json.loads(proc.stdout)
+    except ValueError:
+        out = {}
+    if out.get("is_error") or proc.returncode != 0:
+        message = str(out.get("result") or proc.stderr or proc.stdout)[-500:]
+        if _is_limit(message, out.get("api_error_status")):
+            raise LimitReached(message)
+        raise RuntimeError(f"claude -p failed ({proc.returncode}): {message}")
     result = out.get("structured_output")
     if not isinstance(result, dict):
         result = json.loads(out.get("result") or "{}")

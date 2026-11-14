@@ -288,3 +288,26 @@ def test_aliases_merge_project_names(tmp_path):
     res = {"skip": False, "entries": [{"ts": T0.isoformat(), "summary": "x", "project": p}
                                       for p in ["Algolia PHP", "webseiten-suche", "pandoc-pdf", "anderes"]]}
     assert [e["project"] for e in to_entries(s, res, "unsortiert", rules)] == ["search", "search", "docs", "anderes"]
+
+
+def test_limit_stops_run(tmp_path, monkeypatch, capsys):
+    from worklog_import import summarize
+    projects = tmp_path / "projects"
+    for i in range(3):
+        write_cc_session(projects, f"lim-{i}")
+    calls = []
+
+    def fake(s, project, model=None, known=None, lean=False):
+        calls.append(s.session_id)
+        if len(calls) == 2:
+            raise summarize.LimitReached("You've hit your 5-hour limit")
+        return summarize.summarize_simple(s, project)
+
+    monkeypatch.setattr(cli, "summarize_claude", fake)
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["prepare", "--path", str(projects), "--min-age-hours", "0"])
+    assert rc == 2 and len(calls) == 2  # third session not tried
+    assert "LIMIT REACHED" in capsys.readouterr().err
+    assert len(Path("import-preview.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert summarize._is_limit("You've hit your 5-hour limit · resets 9:20am")
+    assert summarize._is_limit("x", 429) and not summarize._is_limit("other error")

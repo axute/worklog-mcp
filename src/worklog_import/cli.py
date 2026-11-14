@@ -28,7 +28,7 @@ from . import __version__
 from .rules import load_rules
 from .sources import (Session, claude_ai_sessions, claude_code_sessions, copilot_sessions,
                       default_claude_dir, filter_sessions, parse_ts)
-from .summarize import PROMPT_VERSION, summarize_claude, summarize_simple, to_entries
+from .summarize import PROMPT_VERSION, LimitReached, summarize_claude, summarize_simple, to_entries
 from .upload import upload
 
 
@@ -93,6 +93,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     cost = 0.0
     new_count = 0
     pending = 0
+    limit_hit = False
     print(f"{len(sessions)} sessions ({args.source}), summarizer: {args.summarizer}", file=sys.stderr)
     for n, s in enumerate(sessions, 1):
         project = rules.match(s) or rules.default
@@ -111,6 +112,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             try:
                 result = (summarize_claude(s, project, args.model, known=known, lean=args.lean_system_prompt)
                           if args.summarizer == "claude" else summarize_simple(s, project))
+            except LimitReached as e:
+                print(f"{label} LIMIT REACHED: {e}\nStopping; everything summarized so far is cached. "
+                      f"Run the same command again after the limit resets.", file=sys.stderr)
+                limit_hit = True
+                break
             except Exception as e:  # keep going, report at the end
                 print(f"{label} FAILED: {e}", file=sys.stderr)
                 previews.append({"session": s, "project": project, "error": str(e), "entries": []})
@@ -136,13 +142,15 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     if cost:
         print(f"claude -p usage (API price equivalent, on a subscription it counts against the plan's limits): "
               f"${cost:.2f}", file=sys.stderr)
-    if pending:
+    if limit_hit:
+        print("stopped at the usage limit; the preview contains only the summarized sessions.", file=sys.stderr)
+    elif pending:
         print(f"{pending} sessions not summarized yet (--max-new {args.max_new}); run the same command again "
               f"to continue. The preview contains only the summarized ones.", file=sys.stderr)
     else:
         print("all sessions summarized.", file=sys.stderr)
     print(f"review: {out_md}\nupload: worklog-import upload --file {out_jsonl}", file=sys.stderr)
-    return 1 if failed else 0
+    return 2 if limit_hit else 1 if failed else 0
 
 
 def _markdown(previews: List[Dict[str, Any]]) -> str:
