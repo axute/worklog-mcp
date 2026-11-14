@@ -109,7 +109,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         else:
             new_count += 1
             try:
-                result = (summarize_claude(s, project, args.model, known=known)
+                result = (summarize_claude(s, project, args.model, known=known, lean=args.lean_system_prompt)
                           if args.summarizer == "claude" else summarize_simple(s, project))
             except Exception as e:  # keep going, report at the end
                 print(f"{label} FAILED: {e}", file=sys.stderr)
@@ -228,6 +228,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     pr.add_argument("--rules", help="import-rules.yaml (or .json)")
     pr.add_argument("--summarizer", choices=["claude", "none"], default="claude")
     pr.add_argument("--model", help="model for claude -p (default: your Claude Code default)")
+    pr.add_argument("--lean-system-prompt", action="store_true",
+                    help="replace Claude Code's default system prompt with a short one (saves only a few percent)")
     pr.add_argument("--limit", type=int, help="only the oldest N sessions (for a trial run)")
     pr.add_argument("--max-new", type=int, help="summarize at most N sessions that are not in the cache yet "
                                                 "(run in stages; repeat the same command to continue)")

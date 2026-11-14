@@ -47,6 +47,12 @@ SCHEMA = {
     "required": ["skip", "entries"],
 }
 
+# Optional replacement for Claude Code's default system prompt (--lean-system-prompt).
+# Measured on 3 sessions: only ~4 % less usage, because the default prompt is
+# served from the prompt cache; long sessions came out a bit coarser. Off by default.
+SYSTEM_PROMPT = ("You summarize past chat sessions into concise work log entries. "
+                 "Answer only with the requested JSON. Never include secrets or personal data of others.")
+
 PROMPT = """\
 You write entries for a personal work log from a past AI chat session.
 
@@ -101,7 +107,7 @@ def session_text(s: Session) -> str:
 
 
 def summarize_claude(s: Session, project: str, model: Optional[str] = None, timeout: int = 300,
-                     known: Optional[List[str]] = None) -> Dict[str, Any]:
+                     known: Optional[List[str]] = None, lean: bool = False) -> Dict[str, Any]:
     body, redactions = redact(session_text(s))
     prompt = PROMPT.format(max_entries=MAX_ENTRIES, project=project, known=", ".join(known or []) or "none",
                            source=s.source,
@@ -111,6 +117,8 @@ def summarize_claude(s: Session, project: str, model: Optional[str] = None, time
            "--json-schema", json.dumps(SCHEMA)]
     if model:
         cmd += ["--model", model]
+    if lean:
+        cmd += ["--system-prompt", SYSTEM_PROMPT]
     workdir = Path(tempfile.gettempdir()) / "worklog-import-claude"
     workdir.mkdir(exist_ok=True)
     proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=workdir)
@@ -123,6 +131,7 @@ def summarize_claude(s: Session, project: str, model: Optional[str] = None, time
     if not isinstance(result, dict):
         result = json.loads(out.get("result") or "{}")
     result["_cost_usd"] = out.get("total_cost_usd")
+    result["_usage"] = out.get("usage")
     result["_redactions"] = redactions
     return result
 
