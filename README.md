@@ -123,3 +123,7 @@ Run: `python -m worklog.server`. `GET /healthz` answers `ok` without a token (fo
 ```
 
 The tests start the real server on `127.0.0.1` with a temporary database and talk to it with the FastMCP client; no outside network is used.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

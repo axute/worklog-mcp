@@ -7,6 +7,8 @@ name = "worklog"
 version = "0.1.0"
 description = "MCP server that collects work log entries from AI agents"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp==4.1.8",
