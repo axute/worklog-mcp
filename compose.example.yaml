@@ -17,6 +17,9 @@ services:
     environment:
       TZ: ${WORKLOG_TZ:-Europe/Berlin}
       WORKLOG_DB: /data/worklog.db
+      # optional: sign-in for the web view through Traefik forward auth (see the routers below)
+      # WORKLOG_PROXY_SECRET: ${WORKLOG_PROXY_SECRET}
+      # WORKLOG_LOGOUT_URL: https://auth.example.com/logout
     volumes:
       # use a path directly on a pool/disk, not a FUSE/union mount: SQLite locks need a real file system
       - ${WORKLOG_DATA:?set WORKLOG_DATA}:/data
@@ -33,6 +36,17 @@ services:
       # traefik.http.routers.worklog.tls.certresolver: letsencrypt
       traefik.http.routers.worklog.middlewares: worklog-headers
       traefik.http.services.worklog.loadbalancer.server.port: "8000"
+      # optional: web view behind an existing forward-auth middleware (here "authelia@docker").
+      # The main router then removes the proxy headers, the ui router sets the secret after auth.
+      # traefik.http.routers.worklog.middlewares: worklog-strip,worklog-headers
+      # traefik.http.routers.worklog.service: worklog
+      # traefik.http.routers.worklog-ui.rule: Host(`${WORKLOG_HOST}`) && (Path(`/`) || PathPrefix(`/ui`))
+      # traefik.http.routers.worklog-ui.priority: "100"
+      # traefik.http.routers.worklog-ui.middlewares: authelia@docker,worklog-proxy,worklog-headers
+      # traefik.http.routers.worklog-ui.service: worklog
+      # traefik.http.middlewares.worklog-strip.headers.customrequestheaders.Remote-User: ""
+      # traefik.http.middlewares.worklog-strip.headers.customrequestheaders.X-Worklog-Proxy: ""
+      # traefik.http.middlewares.worklog-proxy.headers.customrequestheaders.X-Worklog-Proxy: ${WORKLOG_PROXY_SECRET}
       traefik.http.middlewares.worklog-headers.headers.stsSeconds: "31536000"
       traefik.http.middlewares.worklog-headers.headers.contentTypeNosniff: "true"
 

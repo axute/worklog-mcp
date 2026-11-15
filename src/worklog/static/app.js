@@ -1,4 +1,4 @@
-/* Worklog web view: read-only list and overview. No dependencies.
+/* Worklog web view: list, overview and (for admins) token management. No dependencies.
  * All entry text is inserted with textContent, never as HTML. */
 'use strict';
 
@@ -6,7 +6,7 @@
 
 const TEXT = {
   en: {
-    loginHint: 'Sign in with a token that has the read scope.', token: 'Token', signIn: 'Sign in', signOut: 'Sign out',
+    loginHint: 'You are not signed in through the single sign-on. Alternatively, sign in with a token that has the read scope (read only).', token: 'Token', signIn: 'Sign in', signOut: 'Sign out',
     badToken: 'This token is not valid.', noRead: 'This token has no read scope.', loginFailed: 'Sign-in failed.',
     entries: 'Entries', overview: 'Overview', search: 'Search …', project: 'Project', agent: 'Agent', source: 'Source',
     period: 'Period', from: 'From', to: 'To', reset: 'Reset filters',
@@ -18,9 +18,17 @@ const TEXT = {
     perProject: 'By project', time: 'Time', asTable: 'Show as table', showAll: 'Show all {0} projects', showLess: 'Show fewer',
     perDay: 'Per day', perWeek: 'Per week', perMonth: 'Per month', weekOf: 'Week of {0}',
     tEntries: 'Entries', tTime: 'Logged time', tProjects: 'Projects', tDays: 'Active days', bucket: 'Period',
+    tokens: 'Tokens', newToken: 'New token', newTokenHint: 'The name becomes the agent of every entry written with this token.',
+    tokenName: 'Name', scopes: 'Rights', scopeRead: 'read', scopeWrite: 'write', create: 'Create',
+    tokenCreated: 'Token created', tokenOnce: 'Copy it now. It is shown only this once and cannot be retrieved later.',
+    copy: 'Copy', copied: 'Copied', done: 'Done, hide token', revoke: 'Revoke',
+    revokeConfirm: 'Revoke the token "{0}"? Agents using it lose access immediately. The name cannot be reused.',
+    colName: 'Name', colScopes: 'Rights', colCreated: 'Created', colUsed: 'Last used', colState: 'Status',
+    active: 'active', revokedAt: 'revoked {0}', never: 'never', pickScope: 'Choose at least one right.',
+    nameTaken: 'This name is already taken (also by revoked tokens).', badName: 'Name: 1–64 characters, letters, digits, - _ or .',
   },
   de: {
-    loginHint: 'Melde dich mit einem Token an, das das Recht „read“ hat.', token: 'Token', signIn: 'Anmelden', signOut: 'Abmelden',
+    loginHint: 'Du bist nicht über das Single Sign-on angemeldet. Alternativ geht die Anmeldung mit einem Token, das das Recht „read“ hat (nur lesen).', token: 'Token', signIn: 'Anmelden', signOut: 'Abmelden',
     badToken: 'Dieses Token ist nicht gültig.', noRead: 'Dieses Token hat kein Leserecht.', loginFailed: 'Anmeldung fehlgeschlagen.',
     entries: 'Einträge', overview: 'Übersicht', search: 'Suchen …', project: 'Projekt', agent: 'Agent', source: 'Quelle',
     period: 'Zeitraum', from: 'Von', to: 'Bis', reset: 'Filter zurücksetzen',
@@ -32,6 +40,14 @@ const TEXT = {
     perProject: 'Nach Projekt', time: 'Zeit', asTable: 'Als Tabelle anzeigen', showAll: 'Alle {0} Projekte anzeigen', showLess: 'Weniger anzeigen',
     perDay: 'Pro Tag', perWeek: 'Pro Woche', perMonth: 'Pro Monat', weekOf: 'Woche ab {0}',
     tEntries: 'Einträge', tTime: 'Erfasste Zeit', tProjects: 'Projekte', tDays: 'Aktive Tage', bucket: 'Zeitraum',
+    tokens: 'Tokens', newToken: 'Neues Token', newTokenHint: 'Der Name wird zum Agent jedes Eintrags, der mit diesem Token geschrieben wird.',
+    tokenName: 'Name', scopes: 'Rechte', scopeRead: 'lesen', scopeWrite: 'schreiben', create: 'Anlegen',
+    tokenCreated: 'Token angelegt', tokenOnce: 'Kopiere es jetzt. Es wird nur dieses eine Mal angezeigt und lässt sich später nicht mehr abrufen.',
+    copy: 'Kopieren', copied: 'Kopiert', done: 'Fertig, Token ausblenden', revoke: 'Widerrufen',
+    revokeConfirm: 'Token „{0}“ widerrufen? Agents, die es nutzen, verlieren sofort den Zugriff. Der Name ist danach nicht wieder verwendbar.',
+    colName: 'Name', colScopes: 'Rechte', colCreated: 'Angelegt', colUsed: 'Zuletzt benutzt', colState: 'Status',
+    active: 'aktiv', revokedAt: 'widerrufen {0}', never: 'nie', pickScope: 'Wähle mindestens ein Recht.',
+    nameTaken: 'Dieser Name ist schon vergeben (auch widerrufene Tokens zählen).', badName: 'Name: 1–64 Zeichen, Buchstaben, Ziffern, - _ oder .',
   },
 };
 const lang = (navigator.language || 'en').toLowerCase().startsWith('de') ? 'de' : 'en';
@@ -84,11 +100,13 @@ let total = 0;
 let seq = 0;             // discards answers of outdated requests
 let overview = null;     // last stats answer
 let allProjects = false;
+let me = null;           // { user, via, admin, logout_url }
+const TABS = () => (me && me.admin ? ['entries', 'overview', 'tokens'] : ['entries', 'overview']);
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   for (const k of Object.keys(DEFAULTS)) state[k] = p.get(k) ?? DEFAULTS[k];
-  if (!['entries', 'overview'].includes(state.tab)) state.tab = 'entries';
+  if (!TABS().includes(state.tab)) state.tab = 'entries';
   if (!RANGES.includes(state.range)) state.range = 'all';
   if (!['time', 'entries'].includes(state.metric)) state.metric = 'time';
 }
@@ -121,10 +139,26 @@ function filterParams() {
 async function api(path, params) {
   const url = new URL(path, location.href);
   for (const [k, v] of Object.entries(params || {})) if (v !== '' && v != null) url.searchParams.set(k, v);
-  const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+  const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } }).catch(proxyExpired);
   if (r.status === 401) { showLogin(); throw new Error('401'); }
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
   return r.json();
+}
+// Behind a sign-in proxy an expired login answers with a redirect to another
+// origin, which fetch reports as a network error: reload to sign in again.
+function proxyExpired(err) {
+  if (me && me.via === 'proxy' && navigator.onLine) location.reload();
+  throw err;
+}
+async function apiPost(path, body) {
+  const r = await fetch(new URL(path, location.href), {
+    method: 'POST', credentials: 'same-origin',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+  }).catch(proxyExpired);
+  if (r.status === 401) { showLogin(); throw new Error('401'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
 }
 
 // ---------------------------------------------------------------- login
@@ -144,14 +178,22 @@ async function onLogin(ev) {
   if (r && r.ok) {
     $('login-token').value = '';
     $('login').hidden = true;
-    start((await r.json()).agent);
+    loadSession();
   } else {
     $('login-error').textContent = t(r && r.status === 401 ? 'badToken' : r && r.status === 403 ? 'noRead' : 'loginFailed');
   }
 }
 async function onLogout() {
   await fetch('logout', { method: 'POST', credentials: 'same-origin' }).catch(() => null);
+  me = null;
+  hideNewToken();
   showLogin();
+}
+function loadSession() {
+  fetch('session', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((s) => (s ? start(s) : showLogin()))
+    .catch(showLogin);
 }
 
 // ---------------------------------------------------------------- filters
@@ -179,6 +221,9 @@ function syncControls() {
   for (const b of document.querySelectorAll('[data-metric]')) b.setAttribute('aria-pressed', String(b.dataset.metric === state.metric));
   $('view-entries').hidden = state.tab !== 'entries';
   $('view-overview').hidden = state.tab !== 'overview';
+  $('view-tokens').hidden = state.tab !== 'tokens';
+  $('filters').hidden = state.tab === 'tokens';
+  if (state.tab !== 'tokens') hideNewToken();   // a new token never lingers on other tabs
 }
 function changed() {
   writeHash();
@@ -196,14 +241,16 @@ function setFilter(key, value) {
 // ---------------------------------------------------------------- entries
 
 function refresh() {
-  if (state.tab === 'entries') loadEntries(true); else loadOverview();
+  if (state.tab === 'entries') loadEntries(true);
+  else if (state.tab === 'overview') loadOverview();
+  else loadTokens();
 }
 async function loadEntries(reset) {
   const my = ++seq;
   if (reset) { shown = []; total = 0; }
   $('status').textContent = t('loading');
   try {
-    const data = await api('../api/entries', { ...filterParams(), limit: PAGE, offset: shown.length });
+    const data = await api('api/entries', { ...filterParams(), limit: PAGE, offset: shown.length });
     if (my !== seq) return;
     shown = shown.concat(data.entries);
     total = data.total;
@@ -265,7 +312,7 @@ async function loadOverview() {
   const my = ++seq;
   $('status').textContent = t('loading');
   try {
-    const data = await api('../api/stats', filterParams());
+    const data = await api('api/stats', filterParams());
     if (my !== seq) return;
     overview = data;
     renderOverview();
@@ -428,14 +475,103 @@ function showTip(text, x, y) {
 }
 function hideTip() { $('tip').hidden = true; }
 
+// ---------------------------------------------------------------- tokens (admin)
+
+const dateTimeFmt = new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' });
+const fmtWhen = (s) => (s ? dateTimeFmt.format(new Date(s)) : t('never'));
+
+async function loadTokens() {
+  const my = ++seq;
+  $('status').textContent = t('loading');
+  try {
+    const data = await api('api/tokens');
+    if (my !== seq) return;
+    $('status').textContent = '';
+    renderTokens(data.tokens);
+  } catch (e) {
+    if (my === seq && e.message !== '401') $('status').textContent = t('error', e.message);
+  }
+}
+function renderTokens(tokens) {
+  const table = $('token-table');
+  table.textContent = '';
+  const head = table.createTHead().insertRow();
+  for (const key of ['colName', 'colScopes', 'colCreated', 'colUsed', 'colState', '']) head.append(el('th', null, key ? t(key) : ''));
+  const body = table.createTBody();
+  // active first, then by name
+  const rows = [...tokens].sort((a, b) => (!!a.revoked_at - !!b.revoked_at) || a.name.localeCompare(b.name));
+  for (const k of rows) {
+    const tr = body.insertRow();
+    if (k.revoked_at) tr.className = 'revoked';
+    tr.append(el('td', null, k.name),
+      el('td', null, k.scopes.map((s) => t(s === 'read' ? 'scopeRead' : s === 'write' ? 'scopeWrite' : s) || s).join(', ')),
+      el('td', null, fmtWhen(k.created_at)), el('td', null, fmtWhen(k.last_used_at)),
+      el('td', null, k.revoked_at ? t('revokedAt', fmtWhen(k.revoked_at)) : t('active')));
+    const cell = el('td', 'actions');
+    if (!k.revoked_at) {
+      const b = el('button', 'danger', t('revoke'));
+      b.type = 'button';
+      b.addEventListener('click', () => revokeToken(k.name));
+      cell.append(b);
+    }
+    tr.append(cell);
+  }
+  if (!rows.length) body.insertRow().append(el('td', 'muted', '–'));
+}
+async function revokeToken(name) {
+  if (!confirm(t('revokeConfirm', name))) return;
+  try {
+    await apiPost(`api/tokens/${encodeURIComponent(name)}/revoke`);
+  } catch (e) {
+    if (e.message !== '401') alert(t('error', e.message));
+  }
+  loadTokens();
+}
+async function onCreateToken(ev) {
+  ev.preventDefault();
+  $('token-error').textContent = '';
+  const form = $('token-form');
+  const scopes = [...form.querySelectorAll('input[name=scope]:checked')].map((i) => i.value);
+  if (!scopes.length) { $('token-error').textContent = t('pickScope'); return; }
+  try {
+    const data = await apiPost('api/tokens', { name: $('token-name').value.trim(), scopes });
+    $('token-value').textContent = data.token;
+    $('token-copy').textContent = t('copy');
+    $('token-new').hidden = false;
+    form.reset();
+    $('token-copy').focus();
+    loadTokens();
+  } catch (e) {
+    if (e.message === '401') return;
+    $('token-error').textContent = /already exists/.test(e.message) ? t('nameTaken') : /^name:/.test(e.message) ? t('badName') : e.message;
+  }
+}
+function hideNewToken() {
+  $('token-value').textContent = '';
+  $('token-new').hidden = true;
+}
+async function copyToken() {
+  try {
+    await navigator.clipboard.writeText($('token-value').textContent);
+    $('token-copy').textContent = t('copied');
+  } catch {
+    getSelection().selectAllChildren($('token-value'));   // fallback: select for Ctrl+C
+  }
+}
+
 // ---------------------------------------------------------------- start
 
-async function start(agent) {
+async function start(session) {
+  me = session;
   $('app').hidden = false;
-  $('who').textContent = agent;
+  $('who').textContent = session.user;
+  $('tab-tokens').hidden = !session.admin;
+  $('logout').hidden = session.via !== 'session';
+  $('logout-link').hidden = !session.logout_url;
+  if (session.logout_url) $('logout-link').href = session.logout_url;
   readHash();
   try {
-    const f = await api('../api/facets');
+    const f = await api('api/facets');
     fillSelect('f-project', t('allProjects'), f.projects, state.project);
     fillSelect('f-agent', t('allAgents'), f.agents, state.agent);
     fillSelect('f-source', t('allSources'), f.sources, state.source);
@@ -482,9 +618,9 @@ function init() {
     raf = requestAnimationFrame(() => { if (overview && state.tab === 'overview') renderTimeline(); });
   }).observe($('timeline'));
 
-  fetch('session', { credentials: 'same-origin' })
-    .then((r) => (r.ok ? r.json() : null))
-    .then((s) => (s ? start(s.agent) : showLogin()))
-    .catch(showLogin);
+  $('token-form').addEventListener('submit', onCreateToken);
+  $('token-copy').addEventListener('click', copyToken);
+  $('token-done').addEventListener('click', hideNewToken);
+  loadSession();
 }
 init();

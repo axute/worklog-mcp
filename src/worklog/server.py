@@ -126,7 +126,7 @@ def _parse_local(value: str | None, tz) -> datetime | None:
 class JsonFormatter(logging.Formatter):
     """One JSON object per line; never logs tokens or entry contents."""
 
-    SAFE_EXTRA = ("entry_id", "agent", "source", "path", "status")
+    SAFE_EXTRA = ("entry_id", "agent", "source", "path", "status", "by", "scopes")
 
     def format(self, record: logging.LogRecord) -> str:
         data: dict[str, Any] = {

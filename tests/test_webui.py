@@ -1,5 +1,6 @@
-"""Web view: sessions, read endpoints, static files."""
+"""Web view: sessions, proxy sign-in, read endpoints, token management, static files."""
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -99,28 +100,32 @@ def test_login_flow_and_read_endpoints(server, db, tokens):
     seed(db)
     with httpx.Client(base_url=server) as c:
         assert c.get("/ui/session").status_code == 401
-        assert c.get("/api/entries").status_code == 401
+        assert c.get("/ui/api/entries").status_code == 401
         assert c.post("/ui/login", json={"token": "wl_wrong"}).status_code == 401
         assert c.post("/ui/login", json={"token": tokens["w"]}).status_code == 403
         r = c.post("/ui/login", json={"token": tokens["r"]})
-        assert r.status_code == 200 and r.json() == {"agent": "reader"}
+        assert r.status_code == 200 and r.json() == {"user": "reader"}
         cookie = r.headers["set-cookie"]
         assert "HttpOnly" in cookie and "SameSite=strict" in cookie.replace("Strict", "strict")
         assert tokens["r"] not in cookie and "Secure" not in cookie  # plain http in tests
-        assert c.get("/ui/session").json()["agent"] == "reader"
+        assert c.get("/ui/session").json() == {"user": "reader", "via": "session", "admin": False,
+                                               "timezone": "Europe/Berlin", "logout_url": ""}
 
-        data = c.get("/api/entries", params={"project": "website", "limit": 2}).json()
+        data = c.get("/ui/api/entries", params={"project": "website", "limit": 2}).json()
         assert data["total"] == 3 and len(data["entries"]) == 2
         assert data["entries"][0]["ts"].endswith("+01:00")
-        assert c.get("/api/entries", params={"q": "rsync"}).json()["total"] == 1
-        assert c.get("/api/entries", params={"since": "2026-11-10", "until": "2026-11-11"}).json()["total"] == 1
-        assert c.get("/api/entries", params={"since": "gestern"}).status_code == 400
-        assert c.get("/api/facets").json()["projects"][1] == {"name": "website", "entries": 3}
-        s = c.get("/api/stats", params={"project": "website"}).json()
+        assert c.get("/ui/api/entries", params={"q": "rsync"}).json()["total"] == 1
+        assert c.get("/ui/api/entries", params={"since": "2026-11-10", "until": "2026-11-11"}).json()["total"] == 1
+        assert c.get("/ui/api/entries", params={"since": "gestern"}).status_code == 400
+        assert c.get("/ui/api/facets").json()["projects"][1] == {"name": "website", "entries": 3}
+        s = c.get("/ui/api/stats", params={"project": "website"}).json()
         assert s["totals"]["entries"] == 3 and s["totals"]["duration_min"] == 45
 
-        # the cookie gives read access only: writing still needs a bearer token
+        # the cookie only works below /ui: /api is for bearer tokens, and writing always needs one
+        assert c.get("/api/entries").status_code == 401
         assert c.post("/api/entries", json={"project": "p", "summary": "x"}).status_code == 401
+        # a token sign-in is read only: no token management
+        assert c.get("/ui/api/tokens").status_code == 403
 
         assert c.post("/ui/logout").status_code == 200
         assert c.get("/ui/session").status_code == 401
@@ -171,3 +176,115 @@ def test_index_has_no_inline_script_or_style():
     from worklog.webui import STATIC
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "<script src=" in html and "<script>" not in html and "style=" not in html and "onclick" not in html
+
+
+# ------------------------------------------------------------------ sign-in through the proxy
+
+SECRET = "s" * 40
+
+
+@pytest.fixture
+def proxy(make_server, settings):
+    return make_server(dataclasses.replace(settings, proxy_secret=SECRET, logout_url="https://auth.example/logout"))
+
+
+def as_user(user="alice", secret=SECRET, **extra):
+    return {"X-Worklog-Proxy": secret, "Remote-User": user, **extra}
+
+
+def test_proxy_sign_in(proxy, db):
+    seed(db)
+    s = httpx.get(proxy + "/ui/session", headers=as_user()).json()
+    assert s == {"user": "alice", "via": "proxy", "admin": True, "timezone": "Europe/Berlin",
+                 "logout_url": "https://auth.example/logout"}
+    assert httpx.get(proxy + "/ui/api/entries", headers=as_user()).json()["total"] == 4
+
+
+@pytest.mark.parametrize("headers", [
+    {"Remote-User": "alice"},                                   # direct to the container, no secret
+    as_user(secret="wrong" * 8),
+    as_user(user=""),
+    {"X-Worklog-Proxy": SECRET},
+])
+def test_proxy_header_needs_secret_and_user(proxy, headers):
+    assert httpx.get(proxy + "/ui/session", headers=headers).status_code == 401
+    assert httpx.get(proxy + "/ui/api/tokens", headers=headers).status_code == 401
+
+
+def test_proxy_header_ignored_without_configured_secret(server):
+    assert httpx.get(server + "/ui/session", headers=as_user()).status_code == 401
+    assert httpx.get(server + "/ui/session", headers=as_user(secret="")).status_code == 401
+
+
+def test_proxy_header_does_not_open_api(proxy):
+    # /api is bearer only, even with valid proxy headers
+    assert httpx.get(proxy + "/api/entries", headers=as_user()).status_code == 401
+
+
+def test_web_users_allowlist(make_server, settings):
+    url = make_server(dataclasses.replace(settings, proxy_secret=SECRET, web_users=frozenset({"alice"})))
+    assert httpx.get(url + "/ui/session", headers=as_user("alice")).status_code == 200
+    assert httpx.get(url + "/ui/session", headers=as_user("mallory")).status_code == 401
+
+
+def test_short_proxy_secret_is_rejected(db, settings):
+    from worklog.server import create_app
+    with pytest.raises(ValueError):
+        create_app(dataclasses.replace(settings, proxy_secret="short"), db)
+
+
+def test_token_management(proxy, db, tokens):
+    host = proxy.split("//")[1]
+    h = as_user(Origin=f"http://{host}")
+    with httpx.Client(base_url=proxy, headers=h) as c:
+        listed = c.get("/ui/api/tokens").json()
+        assert listed["scopes"] == ["read", "write"]
+        assert {t["name"] for t in listed["tokens"]} == {"claude-code-laptop", "hook-only", "reader"}
+        assert all("hash" not in str(t) and "token" not in t for t in listed["tokens"])
+
+        r = c.post("/ui/api/tokens", json={"name": "laptop", "scopes": ["write"]})
+        assert r.status_code == 201
+        new = r.json()
+        assert new["name"] == "laptop" and new["scopes"] == ["write"] and new["token"].startswith("wl_")
+        # the new token works, and it is never shown again
+        ok = httpx.post(proxy + "/api/entries", json={"project": "p", "summary": "x"},
+                        headers={"Authorization": f"Bearer {new['token']}"})
+        assert ok.status_code == 201 and db.get_entry(ok.json()["id"]).agent == "laptop"
+        assert new["token"] not in c.get("/ui/api/tokens").text
+
+        assert c.post("/ui/api/tokens", json={"name": "laptop", "scopes": ["write"]}).status_code == 400
+        assert c.post("/ui/api/tokens", json={"name": "bad name", "scopes": ["write"]}).status_code == 400
+        assert c.post("/ui/api/tokens", json={"name": "x", "scopes": ["admin"]}).status_code == 400
+        assert c.post("/ui/api/tokens", json={"name": "x", "scopes": []}).status_code == 400
+        assert c.post("/ui/api/tokens", json={"name": "x", "scopes": "write"}).status_code == 400
+        assert c.post("/ui/api/tokens", json=["x"]).status_code == 400
+
+        r = c.post("/ui/api/tokens/laptop/revoke", json={})
+        assert r.status_code == 200 and r.json()["revoked_at"]
+        assert c.post("/ui/api/tokens/laptop/revoke", json={}).status_code == 409
+        assert c.post("/ui/api/tokens/nobody/revoke", json={}).status_code == 404
+        gone = httpx.post(proxy + "/api/entries", json={"project": "p", "summary": "x"},
+                          headers={"Authorization": f"Bearer {new['token']}"})
+        assert gone.status_code == 401
+
+
+@pytest.mark.parametrize("extra, kwargs", [
+    ({}, {"json": {"name": "a", "scopes": ["read"]}}),                                     # no Origin
+    ({"Origin": "https://evil.example"}, {"json": {"name": "a", "scopes": ["read"]}}),     # other site
+    ({"Origin": "SAME"}, {"content": b'{"name": "a", "scopes": ["read"]}',                  # form-like post
+                          "headers": {"Content-Type": "text/plain"}}),
+])
+def test_token_changes_need_same_origin_json(proxy, db, extra, kwargs):
+    host = proxy.split("//")[1]
+    headers = as_user(**{k: (f"http://{host}" if v == "SAME" else v) for k, v in extra.items()})
+    headers.update(kwargs.pop("headers", {}))
+    assert httpx.post(proxy + "/ui/api/tokens", headers=headers, **kwargs).status_code == 403
+    with pytest.raises(KeyError):
+        db.get_token("a")
+
+
+def test_bearer_cannot_manage_tokens(proxy, tokens):
+    h = {"Authorization": f"Bearer {tokens['rw']}"}
+    assert httpx.get(proxy + "/ui/api/tokens", headers=h).status_code == 403
+    # a bearer header wins over proxy headers, so it cannot be combined into admin rights
+    assert httpx.get(proxy + "/ui/api/tokens", headers={**h, **as_user()}).status_code == 403

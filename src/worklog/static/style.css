@@ -76,6 +76,25 @@ button.chip:hover { color: var(--ink); outline: 1px solid var(--axis); }
 .more { display: block; margin: 1.2rem auto 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: .45rem 1.2rem; }
 .empty { padding: 2.5rem 0; text-align: center; color: var(--muted); }
 
+/* tokens */
+.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 6px; padding: .45rem 1rem; }
+.token-form h2, .token-new h2 { margin-bottom: .3rem; }
+.token-form p, .token-new p { margin: 0 0 .7rem; }
+.token-fields { display: flex; flex-wrap: wrap; gap: .8rem 1.2rem; align-items: end; }
+.field { display: grid; gap: .25rem; font-size: .88rem; color: var(--ink-2); }
+.field input[type=text], .field input:not([type]) { min-width: 14rem; }
+.scopes { border: 0; padding: 0; margin: 0; display: flex; gap: 1rem; align-items: center; }
+.scopes legend { padding: 0; margin-bottom: .25rem; }
+.scopes label { color: var(--ink); display: inline-flex; gap: .3rem; align-items: center; }
+.token-new { border-color: var(--accent); }
+.token-copy { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-bottom: .6rem; }
+.token-copy code { flex: 1 1 20rem; background: var(--chip); border-radius: 6px; padding: .45rem .6rem; overflow-wrap: anywhere; user-select: all; }
+.tokens-wrap { max-height: none; }
+#token-table td.actions { text-align: right; }
+#token-table tr.revoked td { color: var(--muted); }
+.danger { background: none; border: 1px solid var(--line); border-radius: 6px; padding: .15rem .6rem; color: var(--error); font-size: .85rem; }
+.danger:hover { border-color: var(--error); }
+
 /* overview */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .7rem; margin-top: .4rem; }
 .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .8rem 1rem; }

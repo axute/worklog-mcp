@@ -25,20 +25,38 @@ Scopes: `write` is needed for `log_entry`, `read` for all other tools.
 
 ## Web view
 
-`https://<your-host>/ui/` shows the log in the browser, read-only:
+`https://<your-host>/ui/` shows the log in the browser:
 
 - **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
 - **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
+- **Tokens** (only after signing in through the proxy, see below): create tokens, see when each was last used, revoke them. A new token is shown once.
 
-Sign in with any token that has the `read` scope; a dedicated one is a good idea:
+The page loads nothing from other hosts and follows the light or dark theme and the language (English or German) of the browser.
+
+### Signing in through a reverse proxy (recommended)
+
+Put `/ui` behind the login you already use for other services, e.g. Traefik forward auth with Authelia, Authentik or oauth2-proxy. The proxy sets the user name in a header (`Remote-User` by default) and a shared secret in `X-Worklog-Proxy`; worklog trusts the user header only when the secret matches, so nobody can fake it by talking to the container directly. Users signed in this way may read everything and manage tokens.
+
+```bash
+# .env: a random secret, at least 24 characters
+WORKLOG_PROXY_SECRET=$(openssl rand -base64 32)
+```
+
+`compose.example.yaml` contains the Traefik routers for this (commented out): a second router for `/` and `/ui` with the auth middleware followed by one that adds the secret, and a middleware on the main router that removes both headers from requests to `/mcp` and `/api`. Token changes are accepted only from the page itself (same origin, JSON body).
+
+### Signing in with a token
+
+Without a proxy login, sign in on the page with any token that has the `read` scope; a dedicated one is a good idea:
 
 ```bash
 docker exec -it worklog-mcp worklog token create web --scopes read
 ```
 
-The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behind HTTPS, 30 days). It never contains the token, gives read access only and stops working when the token is revoked. The page loads nothing from other hosts and follows the light or dark theme and the language (English or German) of the browser.
+The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behind HTTPS, 30 days). It never contains the token, gives read access only (no token management) and stops working when the token is revoked.
 
-The same data is available as JSON with a bearer token or the session: `GET /api/entries` (`q`, `project`, `agent`, `source`, `since`, `until`, `limit`, `offset`), `GET /api/facets`, `GET /api/stats`.
+### JSON for scripts
+
+`GET /api/entries` (`q`, `project`, `agent`, `source`, `since`, `until`, `limit`, `offset`), `GET /api/facets` and `GET /api/stats` with a bearer token that has the `read` scope. The page itself uses the same endpoints below `/ui/api/`.
 
 ## REST API
 
@@ -72,6 +90,8 @@ worklog token create claude-code-laptop --scopes write,read   # prints the token
 worklog token list
 worklog token revoke claude-code-laptop
 ```
+
+Signed in through the proxy, the web view does the same under **Tokens**. Revoked names cannot be reused, so entries keep a unique agent name.
 
 Tokens look like `wl_…` (32 random bytes). Store them in a password manager or the client configuration, never in prompts or agent instructions.
 
@@ -129,6 +149,10 @@ python -m worklog_import upload            # --update overwrites already importe
 | `WORKLOG_HOST` | `0.0.0.0` | listen address |
 | `WORKLOG_PORT` | `8000` | listen port |
 | `WORKLOG_TZ` / `TZ` | `Europe/Berlin` | display time zone |
+| `WORKLOG_PROXY_SECRET` | – | enables sign-in through a reverse proxy; the proxy sends it in `X-Worklog-Proxy` (min. 24 characters) |
+| `WORKLOG_USER_HEADER` | `Remote-User` | header with the user name set by the proxy |
+| `WORKLOG_WEB_USERS` | – | optional comma-separated list of users allowed in; empty: everyone the proxy lets through |
+| `WORKLOG_LOGOUT_URL` | – | sign-out link shown to proxy users, e.g. `https://auth.example.com/logout` |
 
 Run: `python -m worklog.server`. `GET /healthz` answers `ok` without a token (for health checks); everything under `/mcp` needs `Authorization: Bearer <token>`.
 

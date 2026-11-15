@@ -27,12 +27,14 @@
     <nav class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-entries" data-tab="entries" data-t="entries"></button>
       <button type="button" role="tab" id="tab-overview" data-tab="overview" data-t="overview"></button>
+      <button type="button" role="tab" id="tab-tokens" data-tab="tokens" data-t="tokens" hidden></button>
     </nav>
     <span class="who"><span id="who" class="muted"></span>
-      <button type="button" id="logout" class="link" data-t="signOut"></button></span>
+      <button type="button" id="logout" class="link" data-t="signOut" hidden></button>
+      <a id="logout-link" class="link" data-t="signOut" hidden></a></span>
   </header>
 
-  <section class="filters" aria-label="Filter">
+  <section id="filters" class="filters" aria-label="Filter">
     <input id="f-q" type="search" data-tp="search" spellcheck="false">
     <select id="f-project" data-ta="project"></select>
     <select id="f-agent" data-ta="agent"></select>
@@ -82,6 +84,39 @@
         <summary data-t="asTable"></summary>
         <div class="table-wrap"><table id="timeline-table"></table></div>
       </details>
+    </section>
+  </main>
+
+  <main id="view-tokens" hidden>
+    <form id="token-form" class="card token-form" autocomplete="off">
+      <h2 data-t="newToken"></h2>
+      <p class="muted small" data-t="newTokenHint"></p>
+      <div class="token-fields">
+        <label class="field"><span data-t="tokenName"></span>
+          <input id="token-name" name="name" required maxlength="64" pattern="[A-Za-z0-9._\-]{1,64}" spellcheck="false" autocapitalize="off">
+        </label>
+        <fieldset class="field scopes"><legend data-t="scopes"></legend>
+          <label><input type="checkbox" name="scope" value="read"> <span data-t="scopeRead"></span></label>
+          <label><input type="checkbox" name="scope" value="write" checked> <span data-t="scopeWrite"></span></label>
+        </fieldset>
+        <button type="submit" class="primary" data-t="create"></button>
+      </div>
+      <p id="token-error" class="error" role="alert"></p>
+    </form>
+
+    <section id="token-new" class="card token-new" hidden>
+      <h2 data-t="tokenCreated"></h2>
+      <p data-t="tokenOnce"></p>
+      <div class="token-copy">
+        <code id="token-value"></code>
+        <button type="button" id="token-copy" class="primary" data-t="copy"></button>
+      </div>
+      <button type="button" id="token-done" class="link" data-t="done"></button>
+    </section>
+
+    <section class="card">
+      <h2 data-t="tokens"></h2>
+      <div class="table-wrap tokens-wrap"><table id="token-table"></table></div>
     </section>
   </main>
 </div>

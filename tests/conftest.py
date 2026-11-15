@@ -33,22 +33,34 @@ def _free_port() -> int:
 
 
 @pytest.fixture
-def server(db, settings):
-    """Real HTTP server on localhost, as the agents will reach it."""
-    port = _free_port()
-    app = create_app(settings, db)
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
-    srv = uvicorn.Server(config)
-    thread = threading.Thread(target=srv.run, daemon=True)
-    thread.start()
-    deadline = time.time() + 10
-    while not srv.started:
-        if time.time() > deadline:
-            raise RuntimeError("server did not start")
-        time.sleep(0.05)
-    yield f"http://127.0.0.1:{port}"
-    srv.should_exit = True
-    thread.join(timeout=10)
+def make_server(db):
+    """Start real HTTP servers on localhost (as agents reach them) for given settings."""
+    running = []
+
+    def start(settings: Settings) -> str:
+        port = _free_port()
+        app = create_app(settings, db)
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
+        srv = uvicorn.Server(config)
+        thread = threading.Thread(target=srv.run, daemon=True)
+        thread.start()
+        running.append((srv, thread))
+        deadline = time.time() + 10
+        while not srv.started:
+            if time.time() > deadline:
+                raise RuntimeError("server did not start")
+            time.sleep(0.05)
+        return f"http://127.0.0.1:{port}"
+
+    yield start
+    for srv, thread in running:
+        srv.should_exit = True
+        thread.join(timeout=10)
+
+
+@pytest.fixture
+def server(make_server, settings):
+    return make_server(settings)
 
 
 @pytest.fixture
