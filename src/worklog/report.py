@@ -84,3 +84,25 @@ def to_csv(entries: list[Entry], tz) -> str:
                     e.details or "", ",".join(e.tags), e.duration_min if e.duration_min is not None else "",
                     e.session_id or "", e.external_id or ""])
     return buf.getvalue()
+
+
+def stats(entries: list[Entry], tz) -> dict[str, Any]:
+    """Totals, per project and per day (local date) for the web overview."""
+    projects: dict[str, dict[str, int]] = {}
+    days: dict[str, dict[str, int]] = {}
+    minutes = 0
+    for e in entries:
+        m = e.duration_min or 0
+        minutes += m
+        p = projects.setdefault(e.project, {"entries": 0, "duration_min": 0})
+        p["entries"] += 1
+        p["duration_min"] += m
+        d = days.setdefault(e.ts.astimezone(tz).date().isoformat(), {"entries": 0, "duration_min": 0})
+        d["entries"] += 1
+        d["duration_min"] += m
+    return {
+        "totals": {"entries": len(entries), "duration_min": minutes, "projects": len(projects), "days": len(days)},
+        "projects": sorted(({"project": k, **v} for k, v in projects.items()),
+                           key=lambda x: (-x["duration_min"], -x["entries"], x["project"])),
+        "days": [{"date": k, **days[k]} for k in sorted(days)],
+    }

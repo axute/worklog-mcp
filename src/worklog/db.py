@@ -73,6 +73,10 @@ MIGRATIONS: list[str] = [
     END;
     INSERT INTO entries_fts (entries_fts) VALUES ('rebuild');
     """,
+    # 3: small key/value store (e.g. the secret that signs web sessions)
+    """
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    """,
 ]
 
 BULK_MAX = 500
@@ -305,6 +309,62 @@ class Database:
             rows = self._conn.execute(sql, args).fetchall()
         return [Entry.from_row(r) for r in rows]
 
+    def query_entries(
+        self,
+        *,
+        q: str | None = None,
+        project: str | None = None,
+        agent: str | None = None,
+        source: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+    ) -> tuple[list[Entry], int]:
+        """Filtered entries, newest first, plus the total number of matches (for the web UI).
+        q is a full text query (all words, prefix match); limit=None returns everything."""
+        base = "FROM entries e"
+        where: list[str] = []
+        args: list[Any] = []
+        if q and q.strip():
+            match = fts_query(q)
+            if not match:
+                return [], 0  # only punctuation: nothing can match
+            base = "FROM entries_fts f JOIN entries e ON e.id = f.rowid"
+            where.append("entries_fts MATCH ?")
+            args.append(match)
+        for column, value in (("project", project), ("agent", agent), ("source", source)):
+            if value:
+                where.append(f"e.{column} = ?")
+                args.append(value)
+        if since:
+            where.append("e.ts >= ?")
+            args.append(to_db_ts(since))
+        if until:
+            where.append("e.ts < ?")
+            args.append(to_db_ts(until))
+        cond = (" WHERE " + " AND ".join(where)) if where else ""
+        sql = f"SELECT e.* {base}{cond} ORDER BY e.ts DESC, e.id DESC"
+        page_args = list(args)
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            page_args += [max(1, min(int(limit), 500)), max(0, int(offset))]
+        with self._lock:
+            total = self._conn.execute(f"SELECT COUNT(*) {base}{cond}", args).fetchone()[0]
+            rows = self._conn.execute(sql, page_args).fetchall()
+        return [Entry.from_row(r) for r in rows], total
+
+    def facets(self) -> dict[str, list[dict[str, Any]]]:
+        """Values to filter by, with entry counts."""
+        out: dict[str, list[dict[str, Any]]] = {}
+        with self._lock:
+            for name, column in (("projects", "project"), ("agents", "agent"), ("sources", "source")):
+                rows = self._conn.execute(
+                    f"SELECT {column} AS v, COUNT(*) AS n FROM entries GROUP BY {column} ORDER BY {column} COLLATE NOCASE"
+                ).fetchall()
+                out[name] = [{"name": r["v"], "entries": r["n"]} for r in rows]
+        return out
+
     def entries_between(self, since: datetime, until: datetime, *, project: str | None = None) -> list[Entry]:
         """All entries in [since, until), oldest first (for summaries and exports)."""
         sql = "SELECT * FROM entries WHERE ts >= ? AND ts < ?"
@@ -405,6 +465,19 @@ class Database:
         if row is None:
             raise KeyError(name)
         return TokenRecord.from_row(row)
+
+    def get_token_by_id(self, token_id: int) -> TokenRecord | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM tokens WHERE id = ?", (token_id,)).fetchone()
+        return TokenRecord.from_row(row) if row else None
+
+    def get_secret(self, name: str) -> str:
+        """Random secret kept in the database, created on first use."""
+        import secrets
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
+                               (f"secret:{name}", secrets.token_hex(32)))
+            return self._conn.execute("SELECT value FROM meta WHERE key = ?", (f"secret:{name}",)).fetchone()[0]
 
     def find_token_by_hash(self, token_hash: str) -> TokenRecord | None:
         with self._lock:

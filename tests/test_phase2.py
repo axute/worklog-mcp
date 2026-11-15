@@ -199,7 +199,8 @@ def test_rest_bulk_limit(server, tokens):
 
 def test_healthz_needs_no_token_but_api_does(server):
     assert httpx.get(server + "/healthz").text == "ok"
-    assert httpx.get(server + "/api/entries").status_code == 405
+    assert httpx.get(server + "/api/entries").status_code == 401   # read endpoint of the web view
+    assert httpx.get(server + "/api/entries/bulk").status_code == 405
 
 
 # ------------------------------------------------------------------ CLI export / backup

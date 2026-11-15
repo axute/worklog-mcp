@@ -17,6 +17,7 @@ from .auth import WorklogTokenVerifier, current_agent
 from .config import Settings
 from .db import SUMMARY_MAX, Database, as_dict
 from .report import group_by_day_and_project
+from .webui import register_webui
 
 INSTRUCTIONS = """\
 Work log for AI agents. Record what you finished with log_entry: one entry per
@@ -105,6 +106,7 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         return [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()} for p in db.list_projects()]
 
     register_api(mcp, db, settings)
+    register_webui(mcp, db, settings)
     return mcp
 
 

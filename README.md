@@ -7,7 +7,7 @@ An MCP server that collects work log entries from AI agents (Claude Code, Docker
 - SQLite storage (WAL), tokens stored only as SHA-256 hashes
 - Times stored in UTC, shown in the configured time zone
 
-> Status: server, tools, REST API, CLI, container setup and importer are done.
+> Status: server, tools, REST API, CLI, container setup, importer and web view are done.
 
 ## Tools
 
@@ -22,6 +22,23 @@ An MCP server that collects work log entries from AI agents (Claude Code, Docker
 Dates without a time zone (`2026-11-13`) are read in the server's time zone.
 
 Scopes: `write` is needed for `log_entry`, `read` for all other tools.
+
+## Web view
+
+`https://<your-host>/ui/` shows the log in the browser, read-only:
+
+- **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
+- **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
+
+Sign in with any token that has the `read` scope; a dedicated one is a good idea:
+
+```bash
+docker exec -it worklog-mcp worklog token create web --scopes read
+```
+
+The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behind HTTPS, 30 days). It never contains the token, gives read access only and stops working when the token is revoked. The page loads nothing from other hosts and follows the light or dark theme and the language (English or German) of the browser.
+
+The same data is available as JSON with a bearer token or the session: `GET /api/entries` (`q`, `project`, `agent`, `source`, `since`, `until`, `limit`, `offset`), `GET /api/facets`, `GET /api/stats`.
 
 ## REST API
 

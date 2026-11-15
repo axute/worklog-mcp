@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>Worklog</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<form id="login" class="login" hidden autocomplete="off">
+  <h1>Worklog</h1>
+  <p data-t="loginHint"></p>
+  <label for="login-token" data-t="token"></label>
+  <input id="login-token" type="password" name="token" required spellcheck="false" autocapitalize="off">
+  <button type="submit" data-t="signIn"></button>
+  <p id="login-error" class="error" role="alert"></p>
+  <p class="muted small"><code>worklog token create web --scopes read</code></p>
+</form>
+
+<div id="app" hidden>
+  <header class="top">
+    <h1>Worklog</h1>
+    <nav class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-entries" data-tab="entries" data-t="entries"></button>
+      <button type="button" role="tab" id="tab-overview" data-tab="overview" data-t="overview"></button>
+    </nav>
+    <span class="who"><span id="who" class="muted"></span>
+      <button type="button" id="logout" class="link" data-t="signOut"></button></span>
+  </header>
+
+  <section class="filters" aria-label="Filter">
+    <input id="f-q" type="search" data-tp="search" spellcheck="false">
+    <select id="f-project" data-ta="project"></select>
+    <select id="f-agent" data-ta="agent"></select>
+    <select id="f-source" data-ta="source"></select>
+    <select id="f-range" data-ta="period">
+      <option value="all" data-t="rangeAll"></option>
+      <option value="today" data-t="rangeToday"></option>
+      <option value="7d" data-t="range7"></option>
+      <option value="30d" data-t="range30"></option>
+      <option value="month" data-t="rangeMonth"></option>
+      <option value="year" data-t="rangeYear"></option>
+      <option value="custom" data-t="rangeCustom"></option>
+    </select>
+    <span id="f-custom" class="custom" hidden>
+      <input id="f-since" type="date" data-ta="from">
+      <span class="muted">–</span>
+      <input id="f-until" type="date" data-ta="to">
+    </span>
+    <button type="button" id="f-reset" class="link" data-t="reset" hidden></button>
+  </section>
+
+  <p id="status" class="muted small" role="status"></p>
+
+  <main id="view-entries">
+    <div id="entries"></div>
+    <button type="button" id="more" class="more" hidden></button>
+  </main>
+
+  <main id="view-overview" hidden>
+    <div class="tiles" id="tiles"></div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 data-t="perProject"></h2>
+        <div class="seg" role="group" data-ta="metric">
+          <button type="button" data-metric="time" data-t="time"></button>
+          <button type="button" data-metric="entries" data-t="entries"></button>
+        </div>
+      </div>
+      <div id="projects" class="bars"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2 id="timeline-title"></h2></div>
+      <div id="timeline" class="timeline"></div>
+      <details class="table-view">
+        <summary data-t="asTable"></summary>
+        <div class="table-wrap"><table id="timeline-table"></table></div>
+      </details>
+    </section>
+  </main>
+</div>
+
+<div id="tip" class="tip" hidden></div>
+<script src="app.js" defer></script>
+</body>
+</html>

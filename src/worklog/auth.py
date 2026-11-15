@@ -61,6 +61,45 @@ def check_token(db: Database, token: str | None) -> AccessToken | None:
     return AccessToken(token=token, client_id=record.name, scopes=record.scopes, subject=record.name)
 
 
+# ---------------------------------------------------------------- web sessions
+
+SESSION_COOKIE = "worklog_session"
+SESSION_TTL = timedelta(days=30)
+
+
+def _sign(db: Database, payload: str) -> str:
+    return hmac.new(db.get_secret("session").encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def create_session(db: Database, token: str | None) -> tuple[str | None, AccessToken | None]:
+    """Exchange a valid token for a signed session value (the cookie never holds the token).
+    Returns (None, None) for an invalid token and (None, access) when it lacks the read scope."""
+    access = check_token(db, token)
+    if access is None:
+        return None, None
+    if "read" not in access.scopes:
+        return None, access
+    record = db.get_token(access.client_id)
+    payload = f"v1.{record.id}.{int((utcnow() + SESSION_TTL).timestamp())}"
+    return f"{payload}.{_sign(db, payload)}", access
+
+
+def check_session(db: Database, value: str | None) -> AccessToken | None:
+    """Session cookie -> AccessToken with read scope only; follows revocation of the token."""
+    parts = (value or "").split(".")
+    if len(parts) != 4 or parts[0] != "v1" or not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    payload = ".".join(parts[:3])
+    if not hmac.compare_digest(_sign(db, payload), parts[3]):
+        return None
+    if int(parts[2]) < utcnow().timestamp():
+        return None
+    record = db.get_token_by_id(int(parts[1]))
+    if record is None or record.revoked_at or "read" not in record.scopes:
+        return None
+    return AccessToken(token="session", client_id=record.name, scopes=["read"], subject=record.name)
+
+
 class WorklogTokenVerifier(TokenVerifier):
     """FastMCP auth provider backed by the tokens table."""
 
