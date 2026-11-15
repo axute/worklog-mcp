@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,11 +21,12 @@ class Turn:
     ts: datetime
     prompt: str
     reply: str = ""
+    name: str = ""         # task name, when the source has one (Junie)
 
 
 @dataclass
 class Session:
-    source: str            # "claude-code" | "claude-ai"
+    source: str            # "claude-code" | "claude-ai" | "copilot" | "junie"
     session_id: str
     start: datetime
     end: datetime
@@ -48,6 +50,9 @@ class Session:
 
 
 def parse_ts(value: Any) -> Optional[datetime]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        # epoch; milliseconds when it is too large for seconds
+        return datetime.fromtimestamp(value / 1000 if value > 1e11 else value, tz=timezone.utc)
     if not value or not isinstance(value, str):
         return None
     v = value.strip().replace("Z", "+00:00")
@@ -249,6 +254,80 @@ def copilot_sessions(path: Path, tz: str = "UTC", gap_hours: float = 6.0) -> Ite
             sid = hashlib.sha1(f"{title}|{start.isoformat()}".encode("utf-8")).hexdigest()[:16]
             yield Session(source="copilot", session_id=sid, start=start, end=group[-1][0],
                           title=(title or turns[0].prompt.splitlines()[0])[:120], turns=turns)
+
+
+# ------------------------------------------------------------------ JetBrains Junie (CLI)
+
+def _junie_cwd_name(project_dir: str) -> str:
+    from pathlib import PureWindowsPath
+    return PureWindowsPath(project_dir).name if "\\" in project_dir else Path(project_dir).name
+
+
+def junie_sessions(root: Path) -> Iterator[Session]:
+    """Junie CLI data folder (~/.junie): sessions/index.jsonl, sessions/<id>/events.jsonl
+    and history.jsonl (prompt times). One turn per task: the prompt, Junie's task
+    name and its final result. Only these files are read (never credentials)."""
+    root = Path(root)
+    index: Dict[str, Dict[str, Any]] = {}
+    with open(root / "sessions" / "index.jsonl", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                row = json.loads(line)
+                index[row["sessionId"]] = row
+    prompt_times: Dict[tuple, List[datetime]] = {}
+    hist = root / "history.jsonl"
+    if hist.exists():
+        with open(hist, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                when = parse_ts(row.get("timestamp"))
+                if when:
+                    key = (row.get("projectPath") or "", (row.get("text") or "").strip())
+                    prompt_times.setdefault(key, []).append(when)
+
+    for sid, meta in sorted(index.items()):
+        events = root / "sessions" / sid / "events.jsonl"
+        if not events.exists():
+            continue
+        start, end = parse_ts(meta.get("createdAt")), parse_ts(meta.get("updatedAt"))
+        if not start:
+            continue
+        project_dir = str(meta.get("projectDir") or "")
+        turns: List[Turn] = []
+        files: List[str] = []
+        with open(events, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                e = json.loads(line)
+                if e.get("kind") == "UserPromptEvent":
+                    text = str(e.get("presentablePrompt") or e.get("prompt") or "").strip()
+                    times = prompt_times.get((project_dir, text)) or []
+                    turns.append(Turn(ts=times.pop(0) if times else (turns[-1].ts if turns else start), prompt=text))
+                    continue
+                ae = (e.get("event") or {}).get("agentEvent") or {}
+                kind = ae.get("kind")
+                if not turns:
+                    continue
+                if kind == "AgentTaskNameUpdatedEvent" and ae.get("name"):
+                    turns[-1].name = str(ae["name"])
+                elif kind == "ResultBlockUpdatedEvent" and not ae.get("cancelled") and ae.get("result"):
+                    turns[-1].reply = str(ae["result"])
+                elif kind == "AgentPatchCreatedEvent":
+                    for m in re.finditer(r"^\+\+\+ b/(.+)$", str(ae.get("patch") or ""), flags=re.M):
+                        if m.group(1) not in files:
+                            files.append(m.group(1))
+        if not turns:
+            continue
+        yield Session(source="junie", session_id=sid, start=start, end=max(end or start, turns[-1].ts),
+                      title=str(meta.get("taskName") or turns[0].name or turns[0].prompt.splitlines()[0])[:120],
+                      cwd=project_dir, turns=turns, files=files)
+
+
+def default_junie_dir() -> Path:
+    return Path.home() / ".junie"
 
 
 def default_claude_dir() -> Path:

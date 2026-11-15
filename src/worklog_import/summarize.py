@@ -9,6 +9,7 @@ summarizer itself can never write to the work log.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from datetime import datetime
@@ -167,6 +168,50 @@ def summarize_simple(s: Session, project: str) -> Dict[str, Any]:
         "ts": s.start.isoformat(), "project": project, "summary": summary,
         "details": detail_text, "tags": [s.source], "duration_min": min(minutes, 600),
     }]}
+
+
+NATIVE_DETAILS_MAX = 2500
+NATIVE_TASK_MAX_MIN = 120
+
+
+def _first_summary_line(result: str) -> str:
+    """First bullet below a 'Summary' heading, else ''."""
+    m = re.search(r"^#{1,4}\s*Summary\s*$(.*?)(?=^#{1,4}\s|\Z)", result, flags=re.M | re.S | re.I)
+    if not m:
+        return ""
+    for line in m.group(1).splitlines():
+        line = re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", line).strip()
+        if line:
+            return line.replace("**", "")
+    return ""
+
+
+def summarize_native(s: Session, project: str) -> Dict[str, Any]:
+    """Entries from the agent's own task results (Junie writes a summary per task):
+    one entry per task with a result, no model call. `project` comes from a path
+    rule or is the default; then the name of the working folder is used. The
+    project is set on each entry, so keyword rules do not override it."""
+    from .rules import DEFAULT_PROJECT, normalize_project
+    from .sources import _junie_cwd_name
+    if project == DEFAULT_PROJECT and s.cwd:
+        project = normalize_project(_junie_cwd_name(s.cwd)) or project
+    entries = []
+    for i, t in enumerate(s.turns):
+        if not t.reply.strip():
+            continue
+        summary = _first_summary_line(t.reply) or t.name or t.prompt.splitlines()[0]
+        # time until the next prompt; the last task has no reliable end, so no duration
+        minutes = None
+        if i + 1 < len(s.turns):
+            seconds = (s.turns[i + 1].ts - t.ts).total_seconds()
+            if seconds > 0:  # 0: the next prompt had no recorded time
+                minutes = max(1, min(NATIVE_TASK_MAX_MIN, -int(-seconds // 60)))
+        details = (f"Auftrag: {t.prompt[:400]}\n\n" if t.prompt else "") + t.reply.strip()
+        if len(details) > NATIVE_DETAILS_MAX:
+            details = details[:NATIVE_DETAILS_MAX].rstrip() + " …"
+        entries.append({"ts": t.ts.isoformat(), "project": project, "summary": summary[:300],
+                        "details": details, "tags": [s.source], "duration_min": minutes})
+    return {"skip": not entries, "entries": entries}
 
 
 def to_entries(s: Session, result: Dict[str, Any], project: str, rules: Any = None) -> List[Dict[str, Any]]:

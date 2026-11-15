@@ -117,7 +117,7 @@ Nightly backup, e.g. via cron or the Unraid User Scripts plugin: `docker exec wo
 
 ## Importing earlier sessions
 
-`worklog-import` turns past Claude Code sessions and claude.ai conversations into entries, with their original time stamps. It runs where the data lives (usually your workstation), needs only Python 3.9+ and no extra packages, and uploads finished summaries only – never raw transcripts.
+`worklog-import` turns past Claude Code sessions, claude.ai conversations and JetBrains Junie tasks into entries, with their original time stamps. It runs where the data lives (usually your workstation), needs only Python 3.9+ and no extra packages, and uploads finished summaries only – never raw transcripts.
 
 ```bash
 # from a checkout, without installing:
@@ -127,6 +127,7 @@ cp import-rules.example.yaml import-rules.yaml   # map folders/keywords to proje
 # 1. extract + summarize -> import-preview.jsonl and import-preview.md
 python -m worklog_import prepare --rules import-rules.yaml --since 2026-10-01 --limit 10
 python -m worklog_import prepare --source claude-ai --path ~/Downloads/data-export.zip --rules import-rules.yaml
+python -m worklog_import prepare --source junie --rules import-rules.yaml    # ~/.junie, no AI needed
 
 # 2. read import-preview.md; delete lines in import-preview.jsonl or set "skip": true
 
@@ -135,10 +136,10 @@ export WORKLOG_URL=https://worklog.example.com WORKLOG_TOKEN=wl_...
 python -m worklog_import upload            # --update overwrites already imported entries
 ```
 
-- **Sources:** Claude Code transcripts in `~/.claude/projects/*/*.jsonl` (subagent transcripts are ignored, sessions active in the last 2 hours are skipped), and the claude.ai data export (*Settings → Privacy → Export data*; ZIP, folder or `conversations.json`).
-- **Summaries:** by default with `claude -p`, isolated from your setup (no tools, no MCP servers, no hooks, no session file), so it can never write to the log itself; one entry per result, up to 8 per session, private or trivial conversations are marked as skipped. `--summarizer none` makes one entry per session from the first prompt, without AI.
+- **Sources:** Claude Code transcripts in `~/.claude/projects/*/*.jsonl` (subagent transcripts are ignored, sessions active in the last 2 hours are skipped), the claude.ai data export (*Settings → Privacy → Export data*; ZIP, folder or `conversations.json`), and the Junie CLI data folder `~/.junie` (only `sessions/` and `history.jsonl` are read; Junie keeps the last 10 sessions).
+- **Summaries:** by default with `claude -p`, isolated from your setup (no tools, no MCP servers, no hooks, no session file), so it can never write to the log itself; one entry per result, up to 8 per session, private or trivial conversations are marked as skipped. `--summarizer none` makes one entry per session from the first prompt, without AI. Junie writes its own summary per task, so `--source junie` uses it (`--summarizer native`): one entry per task, project from the working folder (path rules still apply), time until the next prompt as duration.
 - **Secrets:** tokens, keys, passwords, private keys, JWTs, credentials in URLs and long random strings are replaced with `[REDACTED:…]` before anything is summarized or uploaded. Check the preview anyway.
-- **Repeatable:** summaries are cached in `import-cache.json`; entries carry `external_id` `claude-code:<session>:<n>` / `claude-ai:<uuid>:<n>`, so running the import again only adds new sessions.
+- **Repeatable:** summaries are cached in `import-cache.json`; entries carry `external_id` `claude-code:<session>:<n>` / `claude-ai:<uuid>:<n>` / `junie:<session>:<n>`, so running the import again only adds new sessions.
 - Claude Code deletes local transcripts after 30 days by default. Set `"cleanupPeriodDays": 3650` in `~/.claude/settings.json` to keep them.
 
 ## Configuration

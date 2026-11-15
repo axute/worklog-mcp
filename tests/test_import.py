@@ -311,3 +311,74 @@ def test_limit_stops_run(tmp_path, monkeypatch, capsys):
     assert len(Path("import-preview.jsonl").read_text(encoding="utf-8").splitlines()) == 1
     assert summarize._is_limit("You've hit your 5-hour limit · resets 9:20am")
     assert summarize._is_limit("x", 429) and not summarize._is_limit("other error")
+
+
+# ------------------------------------------------------------------ Junie
+
+def write_junie(root: Path, project_dir: str = r"C:\Users\me\PhpstormProjects\shopUI") -> Path:
+    sid = "session-260613-174015-tqaz"
+    (root / "sessions" / sid).mkdir(parents=True)
+    start = 1781365215000  # 2026-06-13 15:40:15 UTC
+    (root / "sessions" / "index.jsonl").write_text(json.dumps({
+        "sessionId": sid, "createdAt": start, "updatedAt": start + 15 * 60000,
+        "projectDir": project_dir, "taskName": "Timeouts prüfen"}) + "\n", encoding="utf-8")
+    prompts = ["erhöhe bitte die Timeouts", "und prüfe das Dockerfile, token=abc123geheim456"]
+    (root / "history.jsonl").write_text("".join(
+        json.dumps({"text": p, "timestamp": start + (i * 7 + 1) * 60000 + 30000, "projectPath": project_dir}) + "\n"
+        for i, p in enumerate(prompts)), encoding="utf-8")
+    agent = lambda **e: json.dumps({"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": e}})
+    lines = [
+        json.dumps({"kind": "UserPromptEvent", "requestId": "r1", "prompt": prompts[0], "presentablePrompt": prompts[0]}),
+        agent(kind="AgentTaskNameUpdatedEvent", name="XHR-Timeout erhöhen"),
+        agent(kind="AgentPatchCreatedEvent", patch="--- a/src/http.ts\n+++ b/src/http.ts\n@@ -1 +1 @@\n-1\n+2"),
+        agent(kind="ResultBlockUpdatedEvent", stepId="x", cancelled=False,
+              result="### Summary\n- Die **Timeouts** wurden auf 300 Sekunden erhöht.\n\n### Changes\n- http.ts"),
+        json.dumps({"kind": "TaskState", "state": "COMPLETED"}),
+        json.dumps({"kind": "UserPromptEvent", "requestId": "r2", "prompt": prompts[1], "presentablePrompt": prompts[1]}),
+        agent(kind="AgentTaskNameUpdatedEvent", name="Dockerfile prüfen"),
+        agent(kind="ResultBlockUpdatedEvent", stepId="y", cancelled=False, result="Das Dockerfile sieht gut aus."),
+        json.dumps({"kind": "UserPromptEvent", "requestId": "r3", "prompt": "abgebrochen", "presentablePrompt": "abgebrochen"}),
+        agent(kind="ResultBlockUpdatedEvent", stepId="z", cancelled=True, result="nichts"),
+    ]
+    (root / "sessions" / sid / "events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (root / "secure_credentials.json").write_text("{not even json", encoding="utf-8")  # must never be read
+    return root
+
+
+def test_junie_parser(tmp_path):
+    from worklog_import.sources import junie_sessions
+    s, = list(junie_sessions(write_junie(tmp_path)))
+    assert s.source == "junie" and s.session_id == "session-260613-174015-tqaz"
+    assert s.cwd.endswith("shopUI") and s.title == "Timeouts prüfen" and s.files == ["src/http.ts"]
+    assert [t.name for t in s.turns] == ["XHR-Timeout erhöhen", "Dockerfile prüfen", ""]
+    assert s.turns[0].ts == datetime(2026, 6, 13, 15, 41, 45, tzinfo=timezone.utc)   # from history.jsonl
+    assert s.turns[1].ts - s.turns[0].ts == timedelta(minutes=7)
+    assert s.turns[2].reply == ""                                                     # cancelled result ignored
+
+
+def test_junie_native_entries(tmp_path):
+    from worklog_import.rules import Rules
+    from worklog_import.sources import junie_sessions
+    from worklog_import.summarize import summarize_native
+    s = next(junie_sessions(write_junie(tmp_path)))
+    result = summarize_native(s, "unsortiert")
+    entries = to_entries(s, result, "unsortiert", Rules())
+    assert [e["summary"] for e in entries] == ["Die Timeouts wurden auf 300 Sekunden erhöht.", "Dockerfile prüfen"]
+    assert {e["project"] for e in entries} == {"shopui"}                              # folder name
+    assert [e["duration_min"] for e in entries] == [7, None]                          # last task: no end known
+    assert [e["external_id"] for e in entries] == ["junie:session-260613-174015-tqaz:0",
+                                                   "junie:session-260613-174015-tqaz:1"]
+    assert "abc123geheim456" not in entries[1]["details"] and "Auftrag:" in entries[1]["details"]
+
+
+def test_junie_cli_folder_beats_keyword_rules(tmp_path, monkeypatch):
+    write_junie(tmp_path / ".junie")
+    rules = tmp_path / "r.yaml"
+    rules.write_text("rules:\n  - project: docker\n    keywords: [Dockerfile, Timeouts]\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["prepare", "--source", "junie", "--path", str(tmp_path / ".junie"), "--rules", str(rules),
+                     "--min-age-hours", "0"]) == 0
+    entries = [json.loads(l) for l in (tmp_path / "import-preview.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 2 and {e["project"] for e in entries} == {"shopui"}
+    with pytest.raises(SystemExit):
+        cli.main(["prepare", "--source", "copilot", "--path", "x.csv", "--summarizer", "native"])

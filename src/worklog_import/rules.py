@@ -69,6 +69,13 @@ class Rules:
                 return r.project
         return None
 
+    def match_path(self, s: Session) -> Optional[str]:
+        """Only path rules: for sources that know the working folder."""
+        for r in self.rules:
+            if s.cwd and any(fnmatch.fnmatch(s.cwd, p) for p in r.paths):
+                return r.project
+        return None
+
     def match(self, s: Session) -> Optional[str]:
         text = (s.title + "\n" + "\n".join(t.prompt for t in s.turns[:20])).lower()
         for r in self.rules:

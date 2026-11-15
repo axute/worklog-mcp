@@ -1,7 +1,7 @@
 """worklog-import command line.
 
-    worklog-import prepare --source claude-code [--path DIR] [--since DATE] [--rules FILE]
-                           [--summarizer claude|none] [--model M] [--limit N] [--exclude ID ...]
+    worklog-import prepare --source claude-code|claude-ai|copilot|junie [--path DIR] [--since DATE] [--rules FILE]
+                           [--summarizer claude|native|none] [--model M] [--limit N] [--exclude ID ...]
     worklog-import upload  [--file import-preview.jsonl] [--url URL] [--update] [--dry-run]
 
 prepare writes import-preview.jsonl (what will be uploaded) and import-preview.md
@@ -26,9 +26,9 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__
 from .rules import load_rules
-from .sources import (Session, claude_ai_sessions, claude_code_sessions, copilot_sessions,
+from .sources import (Session, claude_ai_sessions, claude_code_sessions, copilot_sessions, default_junie_dir, junie_sessions,
                       default_claude_dir, filter_sessions, parse_ts)
-from .summarize import PROMPT_VERSION, LimitReached, summarize_claude, summarize_simple, to_entries
+from .summarize import PROMPT_VERSION, LimitReached, summarize_claude, summarize_native, summarize_simple, to_entries
 from .upload import upload
 
 
@@ -62,11 +62,17 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         if not args.path:
             raise SystemExit("error: --path to the claude.ai export (ZIP, folder or conversations.json) is required")
         sessions_iter = claude_ai_sessions(Path(args.path).expanduser())
+    elif args.source == "junie":
+        sessions_iter = junie_sessions(Path(args.path).expanduser() if args.path else default_junie_dir())
     else:
         if not args.path:
             raise SystemExit("error: --path to the Copilot activity CSV is required")
         sessions_iter = copilot_sessions(Path(args.path).expanduser(), tz=args.tz, gap_hours=args.gap_hours)
 
+    if args.summarizer is None:
+        args.summarizer = "native" if args.source == "junie" else "claude"
+    if args.summarizer == "native" and args.source != "junie":
+        raise SystemExit("error: --summarizer native needs a source with its own task summaries (junie)")
     sessions: List[Session] = list(filter_sessions(
         sessions_iter, _date(args.since), _date(args.until), args.min_age_hours, args.exclude or []))
     sessions.sort(key=lambda s: s.start)
@@ -96,7 +102,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     limit_hit = False
     print(f"{len(sessions)} sessions ({args.source}), summarizer: {args.summarizer}", file=sys.stderr)
     for n, s in enumerate(sessions, 1):
-        project = rules.match(s) or rules.default
+        project = (rules.match_path(s) if args.summarizer == "native" else rules.match(s)) or rules.default
         key = (f"{s.external_base}@{s.fingerprint()}:{args.summarizer}" + (f":{args.model}" if args.model else "")
                + (f":p{PROMPT_VERSION}" if args.summarizer == "claude" else ""))
         cached = cache.get(key)
@@ -111,7 +117,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             new_count += 1
             try:
                 result = (summarize_claude(s, project, args.model, known=known, lean=args.lean_system_prompt)
-                          if args.summarizer == "claude" else summarize_simple(s, project))
+                          if args.summarizer == "claude" else summarize_native(s, project)
+                          if args.summarizer == "native" else summarize_simple(s, project))
             except LimitReached as e:
                 print(f"{label} LIMIT REACHED: {e}\nStopping; everything summarized so far is cached. "
                       f"Run the same command again after the limit resets.", file=sys.stderr)
@@ -126,7 +133,9 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             _save_json(cache_path, cache)
             print(f"{label} -> {'skip' if result.get('skip') else len(result.get('entries') or [])}", file=sys.stderr)
         previews.append({"session": s, "project": project, "result": result,
-                         "entries": to_entries(s, result, project, rules)})
+                         # native: the folder decides, entries carry their project already
+                         "entries": to_entries(s, result, rules.default if args.summarizer == "native" else project,
+                                               rules)})
 
     with open(out_jsonl, "w", encoding="utf-8") as f:
         for p in previews:
@@ -225,16 +234,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pr = sub.add_parser("prepare", help="extract, summarize and write a preview")
-    pr.add_argument("--source", choices=["claude-code", "claude-ai", "copilot"], default="claude-code")
+    pr.add_argument("--source", choices=["claude-code", "claude-ai", "copilot", "junie"], default="claude-code")
     pr.add_argument("--path", help="claude-code: projects folder (default ~/.claude/projects); "
-                                   "claude-ai: export ZIP/folder/json; copilot: activity CSV")
+                                   "claude-ai: export ZIP/folder/json; copilot: activity CSV; junie: data folder (default ~/.junie)")
     pr.add_argument("--tz", default="UTC", help="copilot: time zone of the CSV times (default UTC)")
     pr.add_argument("--gap-hours", type=float, default=6.0,
                     help="copilot: start a new session after a pause this long within one title (default 6)")
     pr.add_argument("--since", help="only sessions that ended on/after this date")
     pr.add_argument("--until", help="only sessions that started before this date")
     pr.add_argument("--rules", help="import-rules.yaml (or .json)")
-    pr.add_argument("--summarizer", choices=["claude", "none"], default="claude")
+    pr.add_argument("--summarizer", choices=["claude", "native", "none"],
+                    help="claude: claude -p (default); native: the agent's own task results (default for junie); "
+                         "none: first prompt only")
     pr.add_argument("--model", help="model for claude -p (default: your Claude Code default)")
     pr.add_argument("--lean-system-prompt", action="store_true",
                     help="replace Claude Code's default system prompt with a short one (saves only a few percent)")
