@@ -29,13 +29,13 @@ Scopes: `write` is needed for `log_entry`, `read` for all other tools.
 
 - **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
 - **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
-- **Tokens** (only after signing in through the proxy, see below): create tokens, see when each was last used, revoke them. A new token is shown once.
+- **Tokens** (only after signing in through the proxy, see below): create your tokens, see when each was last used, revoke them. A new token is shown once.
 
 The page loads nothing from other hosts and follows the light or dark theme and the language (English or German) of the browser.
 
 ### Signing in through a reverse proxy (recommended)
 
-Put `/ui` behind the login you already use for other services, e.g. Traefik forward auth with Authelia, Authentik or oauth2-proxy. The proxy sets the user name in a header (`Remote-User` by default) and a shared secret in `X-Worklog-Proxy`; worklog trusts the user header only when the secret matches, so nobody can fake it by talking to the container directly. Users signed in this way may read everything and manage tokens.
+Put `/ui` behind the login you already use for other services, e.g. Traefik forward auth with Authelia, Authentik or oauth2-proxy. The proxy sets the user name in a header (`Remote-User` by default) and a shared secret in `X-Worklog-Proxy`; worklog trusts the user header only when the secret matches, so nobody can fake it by talking to the container directly. Users signed in this way read their own entries and manage their own tokens.
 
 ```bash
 # .env: a random secret, at least 24 characters
@@ -49,7 +49,7 @@ WORKLOG_PROXY_SECRET=$(openssl rand -base64 32)
 Without a proxy login, sign in on the page with any token that has the `read` scope; a dedicated one is a good idea:
 
 ```bash
-docker exec -it worklog-mcp worklog token create web --scopes read
+docker exec -it worklog-mcp worklog token create web --owner <user> --scopes read
 ```
 
 The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behind HTTPS, 30 days). It never contains the token, gives read access only (no token management) and stops working when the token is revoked.
@@ -83,23 +83,33 @@ curl -sS -X POST "$URL/api/entries/bulk" \
 
 Errors come back as `{"error": "..."}` with 400, 401 (missing or invalid token), 403 (missing scope), 413 or 415.
 
+## Users
+
+Every entry and token belongs to a user, and users are strictly separated: a user sees only their own entries, projects and tokens, through every way in (MCP tools, REST API, web view, export). There is no admin view of other users' entries.
+
+- With sign-in through the proxy, the user is the name the proxy reports (e.g. the Authelia user name). A new user simply starts with an empty log and creates tokens in the web view.
+- A token belongs to the user who created it; everything written with it belongs to that user, and reading with it shows only that user's entries.
+- Token names (= agent names) are unique per user, so two users can both have a `laptop` token. Import ids (`external_id`) are also per user.
+
+**Upgrading from a version without users:** existing entries and tokens need an owner. Set `WORKLOG_LEGACY_OWNER=<user name>` (e.g. your Authelia user) for the first start after the upgrade; the server refuses to start without it as long as there is old data. Existing tokens keep working and now belong to that user. Take a backup first (`worklog backup`).
+
 ## Tokens
 
 ```bash
-worklog token create claude-code-laptop --scopes write,read   # prints the token once
-worklog token list
-worklog token revoke claude-code-laptop
+worklog token create claude-code-laptop --owner alice --scopes write,read   # prints the token once
+worklog token list [--owner alice]
+worklog token revoke claude-code-laptop --owner alice
 ```
 
-Signed in through the proxy, the web view does the same under **Tokens**. Revoked names cannot be reused, so entries keep a unique agent name.
+Signed in through the proxy, the web view does the same under **Tokens** for your own tokens. Revoked names cannot be reused, so entries keep a unique agent name.
 
 Tokens look like `wl_…` (32 random bytes). Store them in a password manager or the client configuration, never in prompts or agent instructions.
 
 ## Export and backup
 
 ```bash
-worklog export --since 2026-11-09 --until 2026-11-16              # Markdown, grouped by day and project
-worklog export --format csv --project website -o website.csv
+worklog export --owner alice --since 2026-11-09 --until 2026-11-16   # Markdown, grouped by day and project
+worklog export --owner alice --format csv --project website -o website.csv
 worklog backup --keep 14   # consistent copy to backups/ next to the database, keeps the newest 14
 ```
 
@@ -108,7 +118,7 @@ worklog backup --keep 14   # consistent copy to backups/ next to the database, k
 1. Create a data directory on a real file system, e.g. directly on a pool or disk. SQLite file locks are unreliable on FUSE/union mounts (on Unraid: use `/mnt/cache/...` or `/mnt/diskN/...`, not `/mnt/user/...`). On Unraid give it to `nobody:users`: `chown 99:100 <dir>`.
 2. `cp compose.example.yaml compose.yaml` and `cp .env.example .env`, then set `WORKLOG_HOST`, `TRAEFIK_NETWORK`, `WORKLOG_DATA` (and `WORKLOG_SRC` if the stack file lives outside the repository). Both files are ignored by git.
 3. `docker compose up -d --build`, then check `docker inspect --format '{{.State.Health.Status}}' worklog-mcp` → `healthy`.
-4. Create a token per agent: `docker exec -it worklog-mcp worklog token create <agent-name>`.
+4. Create a token per agent, in the web view (with proxy sign-in) or with `docker exec -it worklog-mcp worklog token create <agent-name> --owner <user>`.
 5. `curl -i https://<host>/mcp` without a token must answer `401`.
 
 The container publishes no port; it is reachable only through Traefik on the given network. The image runs as `99:100`. Don't put a `compress` middleware on the router: it can buffer streamed MCP responses.
@@ -153,6 +163,7 @@ python -m worklog_import upload            # --update overwrites already importe
 | `WORKLOG_PROXY_SECRET` | – | enables sign-in through a reverse proxy; the proxy sends it in `X-Worklog-Proxy` (min. 24 characters) |
 | `WORKLOG_USER_HEADER` | `Remote-User` | header with the user name set by the proxy |
 | `WORKLOG_WEB_USERS` | – | optional comma-separated list of users allowed in; empty: everyone the proxy lets through |
+| `WORKLOG_LEGACY_OWNER` | – | user who gets entries and tokens from before multi-user support; needed once, for the upgrade |
 | `WORKLOG_LOGOUT_URL` | – | sign-out link shown to proxy users, e.g. `https://auth.example.com/logout` |
 
 Run: `python -m worklog.server`. `GET /healthz` answers `ok` without a token (for health checks); everything under `/mcp` needs `Authorization: Bearer <token>`.

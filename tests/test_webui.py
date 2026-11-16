@@ -23,7 +23,7 @@ def seed(db):
         (3, "website", "claude-code-laptop", "hook", "Bilder komprimiert", None),
     ]
     for day, project, agent, source, summary, minutes in rows:
-        db.add_entry(agent=agent, source=source, project=project, summary=summary,
+        db.add_entry(owner="alice", agent=agent, source=source, project=project, summary=summary,
                      duration_min=minutes, ts=base + timedelta(days=day))
 
 
@@ -31,24 +31,24 @@ def seed(db):
 
 def test_query_entries_filters_and_paging(db):
     seed(db)
-    entries, total = db.query_entries()
+    entries, total = db.query_entries(owner="alice")
     assert total == 4 and [e.summary for e in entries][0] == "Bilder komprimiert"
-    assert db.query_entries(project="website")[1] == 3
-    assert db.query_entries(agent="import")[1] == 1
-    assert db.query_entries(source="hook")[1] == 1
-    assert [e.summary for e in db.query_entries(q="kontakt")[0]] == ["Kontaktformular repariert"]
-    assert db.query_entries(q="deploy", project="backup-scripts") == ([], 0)
-    assert db.query_entries(q="!!!") == ([], 0)
-    page, total = db.query_entries(limit=2, offset=2)
+    assert db.query_entries(owner="alice", project="website")[1] == 3
+    assert db.query_entries(owner="alice", agent="import")[1] == 1
+    assert db.query_entries(owner="alice", source="hook")[1] == 1
+    assert [e.summary for e in db.query_entries(owner="alice", q="kontakt")[0]] == ["Kontaktformular repariert"]
+    assert db.query_entries(owner="alice", q="deploy", project="backup-scripts") == ([], 0)
+    assert db.query_entries(owner="alice", q="!!!") == ([], 0)
+    page, total = db.query_entries(owner="alice", limit=2, offset=2)
     assert total == 4 and len(page) == 2 and page[0].summary == "Rsync-Job für Fotos eingerichtet"
     since = datetime(2026, 11, 10, tzinfo=UTC)
-    assert db.query_entries(since=since, until=since + timedelta(days=1))[1] == 1
-    assert len(db.query_entries(limit=None)[0]) == 4
+    assert db.query_entries(owner="alice", since=since, until=since + timedelta(days=1))[1] == 1
+    assert len(db.query_entries(owner="alice", limit=None)[0]) == 4
 
 
 def test_facets(db):
     seed(db)
-    f = db.facets()
+    f = db.facets(owner="alice")
     assert f["projects"] == [{"name": "backup-scripts", "entries": 1}, {"name": "website", "entries": 3}]
     assert {a["name"]: a["entries"] for a in f["agents"]} == {"claude-code-laptop": 3, "import": 1}
     assert {s["name"] for s in f["sources"]} == {"tool", "import", "hook"}
@@ -56,7 +56,7 @@ def test_facets(db):
 
 def test_stats(db):
     seed(db)
-    s = stats(db.query_entries(limit=None)[0], BERLIN)
+    s = stats(db.query_entries(owner="alice", limit=None)[0], BERLIN)
     assert s["totals"] == {"entries": 4, "duration_min": 90, "projects": 2, "days": 3}
     # same minutes: the project with more entries comes first
     assert s["projects"] == [{"project": "website", "entries": 3, "duration_min": 45},
@@ -77,7 +77,7 @@ def test_session_roundtrip_and_revocation(db, tokens):
     parts = session.split(".")
     assert check_session(db, ".".join([parts[0], "999", parts[2], parts[3]])) is None       # other token id
     assert check_session(db, "") is None and check_session(db, "v1.a.b.c") is None
-    db.revoke_token("claude-code-laptop")
+    db.revoke_token("alice", "claude-code-laptop")
     assert check_session(db, session) is None
 
 
@@ -104,12 +104,12 @@ def test_login_flow_and_read_endpoints(server, db, tokens):
         assert c.post("/ui/login", json={"token": "wl_wrong"}).status_code == 401
         assert c.post("/ui/login", json={"token": tokens["w"]}).status_code == 403
         r = c.post("/ui/login", json={"token": tokens["r"]})
-        assert r.status_code == 200 and r.json() == {"user": "reader"}
+        assert r.status_code == 200 and r.json() == {"user": "alice", "agent": "reader"}
         cookie = r.headers["set-cookie"]
         assert "HttpOnly" in cookie and "SameSite=strict" in cookie.replace("Strict", "strict")
         assert tokens["r"] not in cookie and "Secure" not in cookie  # plain http in tests
-        assert c.get("/ui/session").json() == {"user": "reader", "via": "session", "admin": False,
-                                               "timezone": "Europe/Berlin", "logout_url": ""}
+        assert c.get("/ui/session").json() == {"user": "alice", "agent": "reader", "via": "session",
+                                               "manage_tokens": False, "timezone": "Europe/Berlin", "logout_url": ""}
 
         data = c.get("/ui/api/entries", params={"project": "website", "limit": 2}).json()
         assert data["total"] == 3 and len(data["entries"]) == 2
@@ -195,8 +195,8 @@ def as_user(user="alice", secret=SECRET, **extra):
 def test_proxy_sign_in(proxy, db):
     seed(db)
     s = httpx.get(proxy + "/ui/session", headers=as_user()).json()
-    assert s == {"user": "alice", "via": "proxy", "admin": True, "timezone": "Europe/Berlin",
-                 "logout_url": "https://auth.example/logout"}
+    assert s == {"user": "alice", "agent": None, "via": "proxy", "manage_tokens": True,
+                 "timezone": "Europe/Berlin", "logout_url": "https://auth.example/logout"}
     assert httpx.get(proxy + "/ui/api/entries", headers=as_user()).json()["total"] == 4
 
 
@@ -280,7 +280,7 @@ def test_token_changes_need_same_origin_json(proxy, db, extra, kwargs):
     headers.update(kwargs.pop("headers", {}))
     assert httpx.post(proxy + "/ui/api/tokens", headers=headers, **kwargs).status_code == 403
     with pytest.raises(KeyError):
-        db.get_token("a")
+        db.get_token("alice", "a")
 
 
 def test_bearer_cannot_manage_tokens(proxy, tokens):

@@ -20,6 +20,8 @@ class Settings:
     user_header: str = "Remote-User"
     web_users: frozenset[str] = field(default_factory=frozenset)  # empty: every user the proxy lets through
     logout_url: str = ""
+    # owner for entries and tokens from before multi-user support (needed once, for the migration)
+    legacy_owner: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -33,4 +35,5 @@ class Settings:
             user_header=os.environ.get("WORKLOG_USER_HEADER", "").strip() or "Remote-User",
             web_users=frozenset(u.strip() for u in users.split(",") if u.strip()),
             logout_url=os.environ.get("WORKLOG_LOGOUT_URL", "").strip(),
+            legacy_owner=os.environ.get("WORKLOG_LEGACY_OWNER", "").strip(),
         )

@@ -23,7 +23,7 @@ def seed(db):
         (3, "website", "Bilder komprimiert", None, ["performance"], None),
     ]
     for day, project, summary, details, tags, minutes in rows:
-        db.add_entry(agent="claude-code-laptop", source="tool", project=project, summary=summary,
+        db.add_entry(owner="alice", agent="claude-code-laptop", source="tool", project=project, summary=summary,
                      details=details, tags=tags, duration_min=minutes, ts=base + timedelta(days=day))
 
 
@@ -36,22 +36,22 @@ def test_fts_query_is_safe():
 
 def test_search(db):
     seed(db)
-    assert [e.summary for e in db.search_entries("deploy")] == ["Deployment der Startseite automatisiert"]
-    assert [e.summary for e in db.search_entries("spam")] == ["Kontaktformular repariert"]  # found in details
-    assert [e.summary for e in db.search_entries("fotos rsync")] == ["Rsync-Job für Fotos eingerichtet"]
-    assert db.search_entries("website ci")[0].summary.startswith("Deployment")  # project + tag
-    assert db.search_entries("rsync", project="website") == []
-    assert db.search_entries("fur")[0].project == "backup-scripts"  # diacritics removed: für ~ fur
+    assert [e.summary for e in db.search_entries("deploy", owner="alice")] == ["Deployment der Startseite automatisiert"]
+    assert [e.summary for e in db.search_entries("spam", owner="alice")] == ["Kontaktformular repariert"]  # found in details
+    assert [e.summary for e in db.search_entries("fotos rsync", owner="alice")] == ["Rsync-Job für Fotos eingerichtet"]
+    assert db.search_entries("website ci", owner="alice")[0].summary.startswith("Deployment")  # project + tag
+    assert db.search_entries("rsync", owner="alice", project="website") == []
+    assert db.search_entries("fur", owner="alice")[0].project == "backup-scripts"  # diacritics removed: für ~ fur
     with pytest.raises(ValueError):
-        db.search_entries("  !!! ")
+        db.search_entries("  !!! ", owner="alice")
 
 
 def test_search_follows_updates_and_imports(db):
-    db.import_entries("imp", [{"external_id": "x:1", "ts": "2026-01-01T10:00:00Z", "project": "p", "summary": "alter Text"}])
-    assert len(db.search_entries("alter")) == 1
-    db.import_entries("imp", [{"external_id": "x:1", "ts": "2026-01-01T10:00:00Z", "project": "p", "summary": "neuer Text"}], update=True)
-    assert db.search_entries("alter") == []
-    assert len(db.search_entries("neuer")) == 1
+    db.import_entries("alice", "imp", [{"external_id": "x:1", "ts": "2026-01-01T10:00:00Z", "project": "p", "summary": "alter Text"}])
+    assert len(db.search_entries("alter", owner="alice")) == 1
+    db.import_entries("alice", "imp", [{"external_id": "x:1", "ts": "2026-01-01T10:00:00Z", "project": "p", "summary": "neuer Text"}], update=True)
+    assert db.search_entries("alter", owner="alice") == []
+    assert len(db.search_entries("neuer", owner="alice")) == 1
 
 
 def test_upgrade_from_v1_indexes_old_entries(tmp_path):
@@ -63,15 +63,18 @@ def test_upgrade_from_v1_indexes_old_entries(tmp_path):
                  "('2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'a', 'tool', 'p', 'Altbestand gefunden')")
     conn.commit()
     conn.close()
-    d = Database(path)
+    with pytest.raises(RuntimeError, match="WORKLOG_LEGACY_OWNER"):
+        Database(path)  # old data without a legacy owner: refuse instead of guessing
+    d = Database(path, legacy_owner="alice")
     assert d.schema_version() == len(MIGRATIONS)
-    assert [e.summary for e in d.search_entries("altbestand")] == ["Altbestand gefunden"]
+    assert [e.summary for e in d.search_entries("altbestand", owner="alice")] == ["Altbestand gefunden"]
+    assert d.list_entries(owner="bob") == []
     d.close()
 
 
 def test_projects(db):
     seed(db)
-    p = db.list_projects()
+    p = db.list_projects(owner="alice")
     assert [x["project"] for x in p] == ["website", "backup-scripts"]
     assert p[0]["entries"] == 3 and p[0]["duration_min"] == 45
 
@@ -81,9 +84,9 @@ def test_import_idempotent(db):
         {"external_id": "claude-code:abc", "ts": "2026-10-01T09:15:00+02:00", "project": "p", "summary": "Sitzung A", "tags": ["Import"]},
         {"external_id": "claude-code:def", "ts": "2026-10-02", "project": "p", "summary": "Sitzung B", "duration_min": 10},
     ]
-    assert db.import_entries("import", items) == {"created": 2, "updated": 0, "skipped": 0, "errors": []}
-    assert db.import_entries("import", items) == {"created": 0, "updated": 0, "skipped": 2, "errors": []}
-    entries = db.list_entries()
+    assert db.import_entries("alice", "import", items) == {"created": 2, "updated": 0, "skipped": 0, "errors": []}
+    assert db.import_entries("alice", "import", items) == {"created": 0, "updated": 0, "skipped": 2, "errors": []}
+    entries = db.list_entries(owner="alice")
     assert len(entries) == 2
     a = next(e for e in entries if e.external_id == "claude-code:abc")
     assert a.ts == datetime(2026, 10, 1, 7, 15, tzinfo=UTC)  # original time kept
@@ -91,7 +94,7 @@ def test_import_idempotent(db):
 
 
 def test_import_reports_bad_items_and_keeps_good_ones(db):
-    res = db.import_entries("imp", [
+    res = db.import_entries("alice", "imp", [
         {"external_id": "ok:1", "ts": "2026-10-01", "project": "p", "summary": "gut"},
         {"ts": "2026-10-01", "project": "p", "summary": "ohne id"},
         {"external_id": "bad:2", "ts": "kein datum", "project": "p", "summary": "x"},
@@ -187,8 +190,8 @@ def test_rest_bulk_twice_no_duplicates(server, db, tokens):
     items[0]["summary"] = "S0 korrigiert"
     r3 = httpx.post(server + "/api/entries/bulk?update=true", json=items, headers=h).json()
     assert (r3["updated"], r3["created"]) == (3, 0)
-    assert len(db.list_entries(limit=50)) == 3
-    assert db.list_entries(limit=50)[-1].summary == "S0 korrigiert"
+    assert len(db.list_entries(owner="alice", limit=50)) == 3
+    assert db.list_entries(owner="alice", limit=50)[-1].summary == "S0 korrigiert"
 
 
 def test_rest_bulk_limit(server, tokens):
@@ -210,14 +213,14 @@ def test_export_markdown_and_csv(tmp_path, capsys):
     d = Database(path)
     seed(d)
     d.close()
-    assert main(["--db", path, "export", "--since", "2026-11-09", "--until", "2026-11-11"]) == 0
+    assert main(["--db", path, "export", "--owner", "alice", "--since", "2026-11-09", "--until", "2026-11-11"]) == 0
     md = capsys.readouterr().out
     assert "## 2026-11-09" in md and "### website (30 min)" in md
     assert "- 09:00 · claude-code-laptop: Deployment der Startseite automatisiert – 30 min `ci`" in md
     assert "Bilder komprimiert" not in md  # outside the range
     assert "**Total:** 3 entries, 90 min" in md
     out = tmp_path / "x.csv"
-    assert main(["--db", path, "export", "--format", "csv", "--project", "website", "-o", str(out)]) == 0
+    assert main(["--db", path, "export", "--owner", "alice", "--format", "csv", "--project", "website", "-o", str(out)]) == 0
     lines = out.read_text(encoding="utf-8").splitlines()
     assert lines[0].startswith("id,ts,agent")
     assert len(lines) == 4
@@ -236,5 +239,5 @@ def test_backup_keeps_newest(tmp_path, capsys, monkeypatch):
     files = sorted(p.name for p in backups.iterdir())
     assert len(files) == 2 and files[0] == "worklog-20260102-000000.db"
     copy = Database(backups / files[-1])
-    assert len(copy.list_entries()) == 4
+    assert len(copy.list_entries(owner="alice")) == 4
     copy.close()

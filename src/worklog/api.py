@@ -18,7 +18,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
-from .auth import check_token
+from .auth import check_token, owner_of
 from .config import Settings
 from .db import BULK_MAX, Database
 
@@ -31,7 +31,8 @@ def _error(status: int, message: str, **headers: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status, headers=headers or None)
 
 
-def _authorize(db: Database, request: Request, scope: str) -> tuple[str | None, JSONResponse | None]:
+def _authorize(db: Database, request: Request, scope: str) -> tuple[tuple[str, str] | None, JSONResponse | None]:
+    """(owner, agent) of a bearer token with the scope, or an error response."""
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     access = check_token(db, token.strip()) if scheme.lower() == "bearer" else None
@@ -39,7 +40,7 @@ def _authorize(db: Database, request: Request, scope: str) -> tuple[str | None, 
         return None, _error(401, "missing or invalid bearer token", **{"WWW-Authenticate": 'Bearer realm="worklog"'})
     if scope not in access.scopes:
         return None, _error(403, f"token lacks the '{scope}' scope")
-    return access.client_id, None
+    return (owner_of(access), access.client_id), None
 
 
 async def _json_body(request: Request) -> tuple[Any, JSONResponse | None]:
@@ -63,9 +64,10 @@ def register_api(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/api/entries", methods=["POST"], include_in_schema=False)
     async def post_entry(request: Request) -> JSONResponse:
-        agent, err = _authorize(db, request, "write")
+        who, err = _authorize(db, request, "write")
         if err:
             return err
+        owner, agent = who
         data, err = await _json_body(request)
         if err:
             return err
@@ -82,7 +84,7 @@ def register_api(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return _error(400, "duration_min must be an integer")
         try:
             entry = db.add_entry(
-                agent=agent, source="hook", project=str(data.get("project") or ""),
+                owner=owner, agent=agent, source="hook", project=str(data.get("project") or ""),
                 summary=str(data.get("summary") or ""), details=data.get("details"),
                 tags=tags, duration_min=duration, session_id=data.get("session_id"),
             )
@@ -93,9 +95,10 @@ def register_api(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/api/entries/bulk", methods=["POST"], include_in_schema=False)
     async def post_bulk(request: Request) -> JSONResponse:
-        agent, err = _authorize(db, request, "write")
+        who, err = _authorize(db, request, "write")
         if err:
             return err
+        owner, agent = who
         data, err = await _json_body(request)
         if err:
             return err
@@ -105,7 +108,7 @@ def register_api(mcp: FastMCP, db: Database, settings: Settings) -> None:
         if len(items) > BULK_MAX:
             return _error(413, f"at most {BULK_MAX} entries per request")
         update = request.query_params.get("update", "").lower() in ("1", "true", "yes")
-        result = db.import_entries(agent, items, update=update)
+        result = db.import_entries(owner, agent, items, update=update)
         log.info("bulk_import", extra={"agent": agent, "source": "import", "status": {
             k: (len(v) if isinstance(v, list) else v) for k, v in result.items()}})
         return JSONResponse(result, status_code=200)

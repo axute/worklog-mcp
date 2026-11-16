@@ -5,7 +5,7 @@ from worklog.db import Database
 
 def test_token_lifecycle(tmp_path, capsys):
     path = str(tmp_path / "w.db")
-    assert main(["--db", path, "token", "create", "laptop", "--scopes", "write"]) == 0
+    assert main(["--db", path, "token", "create", "laptop", "--owner", "alice", "--scopes", "write"]) == 0
     token = capsys.readouterr().out.strip().splitlines()[-1]
     assert token.startswith("wl_")
 
@@ -18,18 +18,18 @@ def test_token_lifecycle(tmp_path, capsys):
     assert "laptop" in out and "write" in out and "active" in out
     assert token not in out
 
-    assert main(["--db", path, "token", "revoke", "laptop"]) == 0
+    assert main(["--db", path, "token", "revoke", "laptop", "--owner", "alice"]) == 0
     db = Database(path)
     assert check_token(db, token) is None
     db.close()
 
-    assert main(["--db", path, "token", "revoke", "laptop"]) == 1
+    assert main(["--db", path, "token", "revoke", "laptop", "--owner", "alice"]) == 1
     assert "already revoked" in capsys.readouterr().err
 
 
 def test_duplicate_and_unknown(tmp_path, capsys):
     path = str(tmp_path / "w.db")
-    main(["--db", path, "token", "create", "x"])
-    assert main(["--db", path, "token", "create", "x"]) == 1
+    main(["--db", path, "token", "create", "x", "--owner", "alice"])
+    assert main(["--db", path, "token", "create", "x", "--owner", "alice"]) == 1
     assert "already exists" in capsys.readouterr().err
-    assert main(["--db", path, "token", "revoke", "nope"]) == 1
+    assert main(["--db", path, "token", "revoke", "nope", "--owner", "alice"]) == 1

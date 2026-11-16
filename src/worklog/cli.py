@@ -1,10 +1,13 @@
 """Command line for the container.
 
-    worklog token create <name> [--scopes write,read]
-    worklog token list
-    worklog token revoke <name>
-    worklog export [--format md|csv] [--since DATE] [--until DATE] [--project P] [--output FILE]
+    worklog token create <name> --owner USER [--scopes write,read]
+    worklog token list [--owner USER]
+    worklog token revoke <name> --owner USER
+    worklog export --owner USER [--format md|csv] [--since DATE] [--until DATE] [--project P] [--output FILE]
     worklog backup [--dir DIR] [--keep 14]
+
+Every entry and token belongs to a user (the owner). With sign-in through a
+reverse proxy (Authelia) the owner is the user name the proxy reports.
 """
 
 from __future__ import annotations
@@ -32,17 +35,23 @@ def _fmt(dt, tz) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="worklog", description="worklog MCP server administration")
     parser.add_argument("--db", help="database file (default: $WORKLOG_DB or /data/worklog.db)")
+    parser.add_argument("--legacy-owner", help="user for data from before multi-user support; needed once "
+                                               "for the migration (default: $WORKLOG_LEGACY_OWNER)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     tok = sub.add_parser("token", help="manage access tokens").add_subparsers(dest="action", required=True)
     c = tok.add_parser("create", help="create a token; the plain text is shown once")
     c.add_argument("name", help="agent name, e.g. claude-code-laptop")
+    c.add_argument("--owner", required=True, help="user the token belongs to, e.g. the Authelia user name")
     c.add_argument("--scopes", default="write,read", help="comma separated: write, read (default: write,read)")
-    tok.add_parser("list", help="list tokens")
+    ls = tok.add_parser("list", help="list tokens (of all users, or one)")
+    ls.add_argument("--owner")
     r = tok.add_parser("revoke", help="revoke a token immediately")
     r.add_argument("name")
+    r.add_argument("--owner", required=True)
 
     ex = sub.add_parser("export", help="export entries as Markdown or CSV")
+    ex.add_argument("--owner", required=True, help="whose entries")
     ex.add_argument("--format", choices=["md", "csv"], default="md")
     ex.add_argument("--since", help="ISO date, inclusive (default: everything)")
     ex.add_argument("--until", help="ISO date, exclusive (default: now)")
@@ -55,31 +64,35 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
-    db = Database(args.db or settings.db_path)
+    try:
+        db = Database(args.db or settings.db_path, legacy_owner=args.legacy_owner or settings.legacy_owner)
+    except (RuntimeError, ValueError) as e:  # e.g. migration 4 needs the legacy owner
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     tz = settings.timezone
 
     try:
         if args.command == "token" and args.action == "create":
             scopes = [s.strip() for s in args.scopes.split(",") if s.strip()]
-            token = create_token(db, args.name, scopes)
-            print(f"Token for '{args.name}' (scopes: {','.join(sorted(scopes))}).")
+            token = create_token(db, args.owner, args.name, scopes)
+            print(f"Token '{args.name}' for user '{args.owner}' (scopes: {','.join(sorted(scopes))}).")
             print("It is shown only now; store it in a password manager:\n")
             print(token)
         elif args.command == "token" and args.action == "list":
-            rows = db.list_tokens()
+            rows = db.list_tokens(owner=args.owner)
             if not rows:
                 print("no tokens")
             for t in rows:
                 state = f"revoked {_fmt(t.revoked_at, tz)}" if t.revoked_at else "active"
-                print(f"{t.name:<28} {','.join(t.scopes):<11} created {_fmt(t.created_at, tz)}  "
+                print(f"{t.owner:<16} {t.name:<28} {','.join(t.scopes):<11} created {_fmt(t.created_at, tz)}  "
                       f"last used {_fmt(t.last_used_at, tz):<16}  {state}")
         elif args.command == "token" and args.action == "revoke":
-            db.revoke_token(args.name)
-            print(f"Token '{args.name}' revoked.")
+            db.revoke_token(args.owner, args.name)
+            print(f"Token '{args.name}' of '{args.owner}' revoked.")
         elif args.command == "export":
             since = _local(args.since, tz) if args.since else datetime(1970, 1, 1, tzinfo=tz)
             until = _local(args.until, tz) if args.until else utcnow() + timedelta(seconds=1)
-            entries = db.entries_between(since, until, project=args.project)
+            entries = db.entries_between(since, until, owner=args.owner, project=args.project)
             text = to_csv(entries, tz) if args.format == "csv" else to_markdown(entries, tz)
             if args.output:
                 Path(args.output).write_text(text, encoding="utf-8")
@@ -99,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyError as e:
         print(f"error: unknown token {e}", file=sys.stderr)
         return 1
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     finally:

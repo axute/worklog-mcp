@@ -7,20 +7,23 @@
     GET  /ui/api/entries            filtered list: q, project, agent, source, since, until, limit, offset
     GET  /ui/api/facets             projects, agents and sources with entry counts
     GET  /ui/api/stats              totals, per project and per day for the same filters
-    GET  /ui/api/tokens             token list (admin)
-    POST /ui/api/tokens             {"name", "scopes"} -> new token, shown once (admin)
-    POST /ui/api/tokens/{name}/revoke                                             (admin)
+    GET  /ui/api/tokens             own tokens (proxy sign-in)
+    POST /ui/api/tokens             {"name", "scopes"} -> new own token, shown once (proxy sign-in)
+    POST /ui/api/tokens/{name}/revoke  revoke an own token (proxy sign-in)
 
     GET  /api/entries, /api/facets, /api/stats   the same reads for scripts, bearer token only
+
+Every user sees only their own entries and tokens (strictly separated, no admin view).
 
 Who may do what:
 * Signed in through the reverse proxy (WORKLOG_PROXY_SECRET set, e.g. Traefik with
   Authelia forward auth): the user name comes from a header the proxy sets; this
-  user reads everything and manages tokens. Without the shared secret in
+  user reads their entries and manages their tokens. Without the shared secret in
   X-Worklog-Proxy the header is ignored, so nobody can fake it by talking to the
   container directly.
-* Token sign-in: a signed session cookie (never the token itself), read only.
-* Bearer token with scope read: read only.
+* Token sign-in: a signed session cookie (never the token itself), read only,
+  for the owner of the token.
+* Bearer token with scope read: read only, for the owner of the token.
 Changes need a request from the page's own origin with a JSON body.
 """
 
@@ -38,7 +41,8 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-from .auth import NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_token, create_session, create_token
+from .auth import (NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_token, create_session, create_token,
+                   owner_of)
 from .config import Settings
 from .db import SCOPES, Database, as_dict
 from .report import stats
@@ -65,9 +69,10 @@ SECURITY_HEADERS = {
 
 @dataclass(frozen=True)
 class Viewer:
-    name: str
-    via: str          # proxy | session | bearer
-    admin: bool
+    owner: str          # whose data this request sees
+    agent: str | None   # token name for session/bearer, None for proxy users
+    via: str            # proxy | session | bearer
+    manage_tokens: bool
 
 
 def _json(data, status: int = 200) -> JSONResponse:
@@ -124,19 +129,19 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         else:
             user = proxy_user(request) if allow_cookie else None
             if user:
-                return Viewer(user, "proxy", admin=True), None
+                return Viewer(user, None, "proxy", manage_tokens=True), None
             access, via = (check_session(db, request.cookies.get(SESSION_COOKIE)) if allow_cookie else None), "session"
         if access is None:
             return None, _json({"error": "not signed in"}, 401)
         if "read" not in access.scopes:
             return None, _json({"error": "token lacks the 'read' scope"}, 403)
-        return Viewer(access.client_id, via, admin=False), None
+        return Viewer(owner_of(access), access.client_id, via, manage_tokens=False), None
 
-    def admin(request: Request, change: bool) -> tuple[Viewer | None, JSONResponse | None]:
+    def token_admin(request: Request, change: bool) -> tuple[Viewer | None, JSONResponse | None]:
         who, err = viewer(request)
         if err:
             return None, err
-        if not who.admin:
+        if not who.manage_tokens:
             return None, _json({"error": "only users signed in through the proxy may manage tokens"}, 403)
         if change and not (_same_origin(request, required=True)
                            and request.headers.get("content-type", "").split(";")[0].strip() == "application/json"):
@@ -171,7 +176,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         if session is None:
             return _json({"error": "token lacks the 'read' scope"}, 403)
         log.info("web_login", extra={"agent": access.client_id})
-        response = _json({"user": access.client_id})
+        response = _json({"user": owner_of(access), "agent": access.client_id})
         response.set_cookie(SESSION_COOKIE, session, max_age=int(SESSION_TTL.total_seconds()), path="/",
                             httponly=True, samesite="strict", secure=_is_https(request))
         return response
@@ -187,7 +192,8 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         who, err = viewer(request)
         if err:
             return err
-        return _json({"user": who.name, "via": who.via, "admin": who.admin, "timezone": str(tz),
+        return _json({"user": who.owner, "agent": who.agent, "via": who.via, "manage_tokens": who.manage_tokens,
+                      "timezone": str(tz),
                       "logout_url": settings.logout_url if who.via == "proxy" else ""})
 
     # ------------------------------------------------------------------ data (read only)
@@ -195,7 +201,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
     def reads(prefix: str, allow_cookie: bool) -> None:
         @mcp.custom_route(f"{prefix}/entries", methods=["GET"], include_in_schema=False)
         async def get_entries(request: Request) -> Response:
-            _, err = viewer(request, allow_cookie)
+            who, err = viewer(request, allow_cookie)
             if err:
                 return err
             try:
@@ -204,30 +210,30 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
                 offset = int(request.query_params.get("offset", "0"))
             except ValueError as e:
                 return _json({"error": str(e)}, 400)
-            entries, total = db.query_entries(**f, limit=limit, offset=offset)
+            entries, total = db.query_entries(owner=who.owner, **f, limit=limit, offset=offset)
             return _json({"total": total, "offset": max(0, offset), "entries": [as_dict(e, tz) for e in entries]})
 
         @mcp.custom_route(f"{prefix}/facets", methods=["GET"], include_in_schema=False)
         async def get_facets(request: Request) -> Response:
-            _, err = viewer(request, allow_cookie)
-            return err or _json(db.facets())
+            who, err = viewer(request, allow_cookie)
+            return err or _json(db.facets(owner=who.owner))
 
         @mcp.custom_route(f"{prefix}/stats", methods=["GET"], include_in_schema=False)
         async def get_stats(request: Request) -> Response:
-            _, err = viewer(request, allow_cookie)
+            who, err = viewer(request, allow_cookie)
             if err:
                 return err
             try:
                 f = filters(request)
             except ValueError as e:
                 return _json({"error": str(e)}, 400)
-            entries, _ = db.query_entries(**f, limit=None)
+            entries, _ = db.query_entries(owner=who.owner, **f, limit=None)
             return _json(stats(entries, tz))
 
     reads("/ui/api", allow_cookie=True)
     reads("/api", allow_cookie=False)   # scripts: bearer only, so cookies never reach /api
 
-    # ------------------------------------------------------------------ tokens (admin)
+    # ------------------------------------------------------------------ own tokens (proxy sign-in)
 
     def token_dict(r) -> dict:
         return {"name": r.name, "scopes": r.scopes, "created_at": _iso(r.created_at, tz),
@@ -235,12 +241,12 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/ui/api/tokens", methods=["GET"], include_in_schema=False)
     async def list_tokens(request: Request) -> Response:
-        _, err = admin(request, change=False)
-        return err or _json({"scopes": list(SCOPES), "tokens": [token_dict(r) for r in db.list_tokens()]})
+        who, err = token_admin(request, change=False)
+        return err or _json({"scopes": list(SCOPES), "tokens": [token_dict(r) for r in db.list_tokens(owner=who.owner)]})
 
     @mcp.custom_route("/ui/api/tokens", methods=["POST"], include_in_schema=False)
     async def new_token(request: Request) -> Response:
-        who, err = admin(request, change=True)
+        who, err = token_admin(request, change=True)
         if err:
             return err
         try:
@@ -251,27 +257,27 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
             scopes = body.get("scopes")
             if not isinstance(scopes, list) or not all(isinstance(s, str) for s in scopes):
                 raise ValueError("scopes must be a list")
-            token = create_token(db, name, scopes)
+            token = create_token(db, who.owner, name, scopes)
         except ValueError as e:
             return _json({"error": str(e)}, 400)
-        log.info("token_created", extra={"agent": name, "by": who.name, "scopes": ",".join(sorted(set(scopes)))})
-        return _json({"token": token, **token_dict(db.get_token(name))}, 201)
+        log.info("token_created", extra={"agent": name, "by": who.owner, "scopes": ",".join(sorted(set(scopes)))})
+        return _json({"token": token, **token_dict(db.get_token(who.owner, name))}, 201)
 
     @mcp.custom_route("/ui/api/tokens/{name}/revoke", methods=["POST"], include_in_schema=False)
     async def revoke_token(request: Request) -> Response:
-        who, err = admin(request, change=True)
+        who, err = token_admin(request, change=True)
         if err:
             return err
         name = request.path_params["name"]
         if not NAME_RE.fullmatch(name):
             return _json({"error": "unknown token"}, 404)
         try:
-            record = db.revoke_token(name)
+            record = db.revoke_token(who.owner, name)
         except KeyError:
             return _json({"error": "unknown token"}, 404)
         except ValueError as e:
             return _json({"error": str(e)}, 409)
-        log.info("token_revoked", extra={"agent": name, "by": who.name})
+        log.info("token_revoked", extra={"agent": name, "by": who.owner})
         return _json(token_dict(record))
 
     # ------------------------------------------------------------------ static files

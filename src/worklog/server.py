@@ -48,9 +48,9 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         Call this after every completed work step (feature, fix, configuration change,
         research result): one entry per result, not per single command. The agent name
         is taken from the access token. Never include secrets."""
-        agent = current_agent("write")
+        owner, agent = current_agent("write")
         entry = db.add_entry(
-            agent=agent, source="tool", project=project, summary=summary, details=details,
+            owner=owner, agent=agent, source="tool", project=project, summary=summary, details=details,
             tags=tags, duration_min=duration_min, session_id=session_id,
         )
         log.info("entry_created", extra={"entry_id": entry.id, "agent": agent, "source": "tool"})
@@ -65,9 +65,9 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         limit: Annotated[int, Field(description="Maximum number of entries (1-500).", ge=1, le=500)] = 20,
     ) -> list[dict[str, Any]]:
         """List work log entries, newest first. Times are shown in the server's time zone."""
-        current_agent("read")
+        owner, _ = current_agent("read")
         entries = db.list_entries(
-            project=project, agent=agent,
+            owner=owner, project=project, agent=agent,
             since=_parse_local(since, tz), until=_parse_local(until, tz), limit=limit,
         )
         return [as_dict(e, tz) for e in entries]
@@ -79,8 +79,8 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         limit: Annotated[int, Field(description="Maximum number of results (1-500).", ge=1, le=500)] = 20,
     ) -> list[dict[str, Any]]:
         """Full text search in the work log, best matches first."""
-        current_agent("read")
-        return [as_dict(e, tz) for e in db.search_entries(query, project=project, limit=limit)]
+        owner, _ = current_agent("read")
+        return [as_dict(e, tz) for e in db.search_entries(query, owner=owner, project=project, limit=limit)]
 
     @mcp.tool(annotations={"title": "Summarize a period", "readOnlyHint": True})
     def summarize_period(
@@ -90,11 +90,11 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
     ) -> dict[str, Any]:
         """Entries of a period grouped by day and project, with durations and totals.
         Use it as the basis for weekly or monthly reports."""
-        current_agent("read")
+        owner, _ = current_agent("read")
         start, end = _parse_local(since, tz), _parse_local(until, tz)
         if end <= start:
             raise ValueError("until must be after since")
-        result = group_by_day_and_project(db.entries_between(start, end, project=project), tz)
+        result = group_by_day_and_project(db.entries_between(start, end, owner=owner, project=project), tz)
         result["since"], result["until"] = start.isoformat(), end.isoformat()
         return result
 
@@ -102,8 +102,8 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
     def list_projects() -> list[dict[str, Any]]:
         """Known projects with number of entries, total logged minutes and last entry, most recent first.
         Use the exact project names from here when logging, so entries end up in the same project."""
-        current_agent("read")
-        return [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()} for p in db.list_projects()]
+        owner, _ = current_agent("read")
+        return [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()} for p in db.list_projects(owner=owner)]
 
     register_api(mcp, db, settings)
     register_webui(mcp, db, settings)
@@ -159,7 +159,7 @@ log = logging.getLogger("worklog")
 
 def create_app(settings: Settings | None = None, db: Database | None = None):
     settings = settings or Settings.from_env()
-    db = db or Database(settings.db_path)
+    db = db or Database(settings.db_path, legacy_owner=settings.legacy_owner)
     mcp = create_server(db, settings)
     return mcp.http_app(path="/mcp", stateless_http=True)
 

@@ -29,7 +29,7 @@ def test_mcp_rejects_missing_or_bad_token(server, tokens, auth):
 
 
 def test_mcp_rejects_revoked_token(server, db, tokens):
-    db.revoke_token("claude-code-laptop")
+    db.revoke_token("alice", "claude-code-laptop")
     r = httpx.post(server + "/mcp", json=INIT, headers={**HEADERS, "Authorization": f"Bearer {tokens['rw']}"})
     assert r.status_code == 401
 
@@ -83,7 +83,7 @@ async def test_validation_errors_reach_the_client(server, tokens):
 async def test_local_dates_in_filters(server, db, tokens):
     from datetime import datetime, timezone
     # 23:30 UTC on 12 Nov is 00:30 on 13 Nov in Berlin
-    db.add_entry(agent="a", source="tool", project="p", summary="late", ts=datetime(2026, 11, 12, 23, 30, tzinfo=timezone.utc))
+    db.add_entry(owner="alice", agent="a", source="tool", project="p", summary="late", ts=datetime(2026, 11, 12, 23, 30, tzinfo=timezone.utc))
     async with Client(server + "/mcp", auth=tokens["rw"]) as c:
         on_13th = (await c.call_tool("list_entries", {"since": "2026-11-13", "until": "2026-11-14"})).data
     assert [e["summary"] for e in on_13th] == ["late"]

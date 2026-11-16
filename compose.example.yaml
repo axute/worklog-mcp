@@ -2,7 +2,7 @@
 # fill in the values or put them into a .env file next to it (see .env.example).
 #
 #   docker compose up -d --build
-#   docker exec -it worklog-mcp worklog token create <agent-name>
+#   docker exec -it worklog-mcp worklog token create <agent-name> --owner <user>
 #
 # No port is published: the container is only reachable through Traefik.
 # Do not add a compress middleware to this router; it can buffer streamed

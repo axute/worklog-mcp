@@ -205,7 +205,7 @@ def test_prepare_and_upload_twice(server, db, tokens, tmp_path, monkeypatch, cap
     second_run = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert second_run["created"] == 0 and second_run["skipped"] == 1
 
-    entries = db.list_entries(limit=50)
+    entries = db.list_entries(owner="alice", limit=50)
     assert len(entries) == 1
     e = entries[0]
     assert e.source == "import" and e.agent == "hook-only" and e.ts == T0  # original time

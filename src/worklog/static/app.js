@@ -1,4 +1,4 @@
-/* Worklog web view: list, overview and (for admins) token management. No dependencies.
+/* Worklog web view: list, overview and token management for the signed-in user. No dependencies.
  * All entry text is inserted with textContent, never as HTML. */
 'use strict';
 
@@ -100,8 +100,8 @@ let total = 0;
 let seq = 0;             // discards answers of outdated requests
 let overview = null;     // last stats answer
 let allProjects = false;
-let me = null;           // { user, via, admin, logout_url }
-const TABS = () => (me && me.admin ? ['entries', 'overview', 'tokens'] : ['entries', 'overview']);
+let me = null;           // { user, agent, via, manage_tokens, logout_url }
+const TABS = () => (me && me.manage_tokens ? ['entries', 'overview', 'tokens'] : ['entries', 'overview']);
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -475,7 +475,7 @@ function showTip(text, x, y) {
 }
 function hideTip() { $('tip').hidden = true; }
 
-// ---------------------------------------------------------------- tokens (admin)
+// ---------------------------------------------------------------- own tokens (proxy sign-in)
 
 const dateTimeFmt = new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' });
 const fmtWhen = (s) => (s ? dateTimeFmt.format(new Date(s)) : t('never'));
@@ -564,8 +564,9 @@ async function copyToken() {
 async function start(session) {
   me = session;
   $('app').hidden = false;
-  $('who').textContent = session.user;
-  $('tab-tokens').hidden = !session.admin;
+  // token sign-in shows which token is used: "laptop · axute"
+  $('who').textContent = session.agent ? `${session.agent} · ${session.user}` : session.user;
+  $('tab-tokens').hidden = !session.manage_tokens;
   $('logout').hidden = session.via !== 'session';
   $('logout-link').hidden = !session.logout_url;
   if (session.logout_url) $('logout-link').href = session.logout_url;

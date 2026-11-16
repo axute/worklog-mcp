@@ -66,7 +66,7 @@ def server(make_server, settings):
 @pytest.fixture
 def tokens(db):
     return {
-        "rw": create_token(db, "claude-code-laptop", ["write", "read"]),
-        "w": create_token(db, "hook-only", ["write"]),
-        "r": create_token(db, "reader", ["read"]),
+        "rw": create_token(db, "alice", "claude-code-laptop", ["write", "read"]),
+        "w": create_token(db, "alice", "hook-only", ["write"]),
+        "r": create_token(db, "alice", "reader", ["read"]),
     }

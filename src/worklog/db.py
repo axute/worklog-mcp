@@ -1,5 +1,9 @@
 """SQLite storage: schema, migrations and queries (standard library only).
 
+Every entry and token belongs to an owner (a user). All entry and token queries
+take the owner as a required argument, so data of one user never shows up for
+another; there is no query across owners except the token lookup by hash.
+
 Timestamps are stored as ISO 8601 strings in UTC ("2026-11-13T08:15:00Z") so
 that they sort and compare correctly as text.
 """
@@ -77,7 +81,81 @@ MIGRATIONS: list[str] = [
     """
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     """,
+    # 4: owners (multi-user); existing rows go to the legacy owner (see _migrate_owners)
+    "_migrate_owners",
 ]
+
+OWNER_SCHEMA = """
+    DROP TRIGGER IF EXISTS entries_ai;
+    DROP TRIGGER IF EXISTS entries_ad;
+    DROP TRIGGER IF EXISTS entries_au;
+    CREATE TABLE entries_new (
+        id           INTEGER PRIMARY KEY,
+        owner        TEXT NOT NULL,
+        ts           TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        agent        TEXT NOT NULL,
+        source       TEXT NOT NULL CHECK (source IN ('tool', 'hook', 'import')),
+        project      TEXT NOT NULL,
+        summary      TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND 300),
+        details      TEXT,
+        tags         TEXT,
+        duration_min INTEGER CHECK (duration_min IS NULL OR duration_min >= 0),
+        session_id   TEXT,
+        external_id  TEXT,
+        UNIQUE (owner, external_id)
+    );
+    INSERT INTO entries_new (id, owner, ts, created_at, agent, source, project, summary, details, tags,
+                             duration_min, session_id, external_id)
+        SELECT id, :owner, ts, created_at, agent, source, project, summary, details, tags,
+               duration_min, session_id, external_id FROM entries;
+    DROP TABLE entries;
+    ALTER TABLE entries_new RENAME TO entries;
+    CREATE INDEX entries_owner_ts      ON entries (owner, ts DESC);
+    CREATE INDEX entries_owner_project ON entries (owner, project, ts DESC);
+    CREATE INDEX entries_owner_agent   ON entries (owner, agent, ts DESC);
+    CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts (rowid, summary, details, project, tags)
+        VALUES (new.id, new.summary, new.details, new.project, new.tags);
+    END;
+    CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts (entries_fts, rowid, summary, details, project, tags)
+        VALUES ('delete', old.id, old.summary, old.details, old.project, old.tags);
+    END;
+    CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts (entries_fts, rowid, summary, details, project, tags)
+        VALUES ('delete', old.id, old.summary, old.details, old.project, old.tags);
+        INSERT INTO entries_fts (rowid, summary, details, project, tags)
+        VALUES (new.id, new.summary, new.details, new.project, new.tags);
+    END;
+    INSERT INTO entries_fts (entries_fts) VALUES ('rebuild');
+
+    CREATE TABLE tokens_new (
+        id           INTEGER PRIMARY KEY,
+        owner        TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        token_hash   TEXT NOT NULL UNIQUE,
+        scopes       TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at   TEXT,
+        UNIQUE (owner, name)
+    );
+    INSERT INTO tokens_new (id, owner, name, token_hash, scopes, created_at, last_used_at, revoked_at)
+        SELECT id, :owner, name, token_hash, scopes, created_at, last_used_at, revoked_at FROM tokens;
+    DROP TABLE tokens;
+    ALTER TABLE tokens_new RENAME TO tokens;
+"""
+
+OWNER_MAX = 128
+
+
+def clean_owner(owner: str | None) -> str:
+    """User name as given by the sign-in (e.g. Authelia's Remote-User); no control characters."""
+    o = (owner or "").strip()
+    if not o or len(o) > OWNER_MAX or any(ord(c) < 32 or ord(c) == 127 for c in o):
+        raise ValueError(f"owner: 1-{OWNER_MAX} printable characters")
+    return o
 
 BULK_MAX = 500
 
@@ -111,6 +189,7 @@ def parse_ts(value: str) -> datetime:
 @dataclass
 class Entry:
     id: int
+    owner: str
     ts: datetime
     created_at: datetime
     agent: str
@@ -127,6 +206,7 @@ class Entry:
     def from_row(cls, r: sqlite3.Row) -> "Entry":
         return cls(
             id=r["id"],
+            owner=r["owner"],
             ts=from_db_ts(r["ts"]),
             created_at=from_db_ts(r["created_at"]),
             agent=r["agent"],
@@ -144,6 +224,7 @@ class Entry:
 @dataclass
 class TokenRecord:
     id: int
+    owner: str
     name: str
     token_hash: str
     scopes: list[str]
@@ -155,6 +236,7 @@ class TokenRecord:
     def from_row(cls, r: sqlite3.Row) -> "TokenRecord":
         return cls(
             id=r["id"],
+            owner=r["owner"],
             name=r["name"],
             token_hash=r["token_hash"],
             scopes=[s for s in r["scopes"].split(",") if s],
@@ -167,8 +249,10 @@ class TokenRecord:
 class Database:
     """Thin wrapper around one SQLite connection. Safe to share between threads."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, legacy_owner: str | None = None):
+        """legacy_owner: owner for data from before multi-user (only used by migration 4)."""
         self.path = str(path)
+        self._legacy_owner = legacy_owner
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -192,13 +276,26 @@ class Database:
                     continue
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:
-                    for statement in _split_sql(sql):
-                        self._conn.execute(statement)
+                    if sql == "_migrate_owners":
+                        self._migrate_owners()
+                    else:
+                        for statement in _split_sql(sql):
+                            self._conn.execute(statement)
                     self._conn.execute(f"PRAGMA user_version = {number}")
                     self._conn.execute("COMMIT")
                 except Exception:
                     self._conn.execute("ROLLBACK")
                     raise
+
+    def _migrate_owners(self) -> None:
+        has_data = self._conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM entries) OR EXISTS (SELECT 1 FROM tokens)").fetchone()[0]
+        if has_data and not (self._legacy_owner or "").strip():
+            raise RuntimeError("this database has entries or tokens from before multi-user support: "
+                               "set WORKLOG_LEGACY_OWNER=<user name> once to assign them to that user")
+        owner = clean_owner(self._legacy_owner) if has_data else ""
+        for statement in _split_sql(OWNER_SCHEMA):
+            self._conn.execute(statement, {"owner": owner} if ":owner" in statement else ())
 
     def close(self) -> None:
         with self._lock:
@@ -209,6 +306,7 @@ class Database:
     def add_entry(
         self,
         *,
+        owner: str,
         agent: str,
         source: str,
         project: str,
@@ -233,13 +331,15 @@ class Database:
         if duration_min is not None and duration_min < 0:
             raise ValueError("duration_min must not be negative")
         tag_list = _clean_tags(tags)
+        owner = clean_owner(owner)
         now = utcnow()
         with self._lock:
             cur = self._conn.execute(
-                """INSERT INTO entries (ts, created_at, agent, source, project, summary, details,
+                """INSERT INTO entries (owner, ts, created_at, agent, source, project, summary, details,
                                         tags, duration_min, session_id, external_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
+                    owner,
                     to_db_ts(ts or now),
                     to_db_ts(now),
                     agent,
@@ -264,13 +364,14 @@ class Database:
     def list_entries(
         self,
         *,
+        owner: str,
         project: str | None = None,
         agent: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 20,
     ) -> list[Entry]:
-        where, args = [], []
+        where, args = ["owner = ?"], [clean_owner(owner)]
         if project:
             where.append("project = ?")
             args.append(project)
@@ -284,22 +385,20 @@ class Database:
             where.append("ts < ?")
             args.append(to_db_ts(until))
         limit = max(1, min(int(limit), 500))
-        sql = "SELECT * FROM entries"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
+        sql = "SELECT * FROM entries WHERE " + " AND ".join(where)
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         with self._lock:
             rows = self._conn.execute(sql, (*args, limit)).fetchall()
         return [Entry.from_row(r) for r in rows]
 
-    def search_entries(self, query: str, *, project: str | None = None, limit: int = 20) -> list[Entry]:
+    def search_entries(self, query: str, *, owner: str, project: str | None = None, limit: int = 20) -> list[Entry]:
         """Full text search. Every word must occur (prefix match); ranked by relevance, then newest."""
         match = fts_query(query)
         if not match:
             raise ValueError("query must contain at least one word")
         sql = ("SELECT e.* FROM entries_fts f JOIN entries e ON e.id = f.rowid "
-               "WHERE entries_fts MATCH ?")
-        args: list[Any] = [match]
+               "WHERE entries_fts MATCH ? AND e.owner = ?")
+        args: list[Any] = [match, clean_owner(owner)]
         if project:
             sql += " AND e.project = ?"
             args.append(project)
@@ -312,6 +411,7 @@ class Database:
     def query_entries(
         self,
         *,
+        owner: str,
         q: str | None = None,
         project: str | None = None,
         agent: str | None = None,
@@ -324,8 +424,8 @@ class Database:
         """Filtered entries, newest first, plus the total number of matches (for the web UI).
         q is a full text query (all words, prefix match); limit=None returns everything."""
         base = "FROM entries e"
-        where: list[str] = []
-        args: list[Any] = []
+        where: list[str] = ["e.owner = ?"]
+        args: list[Any] = [clean_owner(owner)]
         if q and q.strip():
             match = fts_query(q)
             if not match:
@@ -343,7 +443,7 @@ class Database:
         if until:
             where.append("e.ts < ?")
             args.append(to_db_ts(until))
-        cond = (" WHERE " + " AND ".join(where)) if where else ""
+        cond = " WHERE " + " AND ".join(where)
         sql = f"SELECT e.* {base}{cond} ORDER BY e.ts DESC, e.id DESC"
         page_args = list(args)
         if limit is not None:
@@ -354,21 +454,24 @@ class Database:
             rows = self._conn.execute(sql, page_args).fetchall()
         return [Entry.from_row(r) for r in rows], total
 
-    def facets(self) -> dict[str, list[dict[str, Any]]]:
+    def facets(self, *, owner: str) -> dict[str, list[dict[str, Any]]]:
         """Values to filter by, with entry counts."""
+        owner = clean_owner(owner)
         out: dict[str, list[dict[str, Any]]] = {}
         with self._lock:
             for name, column in (("projects", "project"), ("agents", "agent"), ("sources", "source")):
                 rows = self._conn.execute(
-                    f"SELECT {column} AS v, COUNT(*) AS n FROM entries GROUP BY {column} ORDER BY {column} COLLATE NOCASE"
+                    f"SELECT {column} AS v, COUNT(*) AS n FROM entries WHERE owner = ? "
+                    f"GROUP BY {column} ORDER BY {column} COLLATE NOCASE", (owner,)
                 ).fetchall()
                 out[name] = [{"name": r["v"], "entries": r["n"]} for r in rows]
         return out
 
-    def entries_between(self, since: datetime, until: datetime, *, project: str | None = None) -> list[Entry]:
+    def entries_between(self, since: datetime, until: datetime, *, owner: str,
+                        project: str | None = None) -> list[Entry]:
         """All entries in [since, until), oldest first (for summaries and exports)."""
-        sql = "SELECT * FROM entries WHERE ts >= ? AND ts < ?"
-        args: list[Any] = [to_db_ts(since), to_db_ts(until)]
+        sql = "SELECT * FROM entries WHERE owner = ? AND ts >= ? AND ts < ?"
+        args: list[Any] = [clean_owner(owner), to_db_ts(since), to_db_ts(until)]
         if project:
             sql += " AND project = ?"
             args.append(project)
@@ -377,16 +480,17 @@ class Database:
             rows = self._conn.execute(sql, args).fetchall()
         return [Entry.from_row(r) for r in rows]
 
-    def list_projects(self) -> list[dict[str, Any]]:
+    def list_projects(self, *, owner: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT project, COUNT(*) AS n, MAX(ts) AS last_ts, SUM(duration_min) AS minutes "
-                "FROM entries GROUP BY project ORDER BY last_ts DESC"
+                "FROM entries WHERE owner = ? GROUP BY project ORDER BY last_ts DESC", (clean_owner(owner),)
             ).fetchall()
         return [{"project": r["project"], "entries": r["n"], "last_ts": from_db_ts(r["last_ts"]),
                  "duration_min": r["minutes"] or 0} for r in rows]
 
-    def import_entries(self, agent: str, items: list[dict[str, Any]], *, update: bool = False) -> dict[str, Any]:
+    def import_entries(self, owner: str, agent: str, items: list[dict[str, Any]], *,
+                       update: bool = False) -> dict[str, Any]:
         """Bulk import with external_id. Known ids are skipped, or overwritten with update=True.
 
         Each item: external_id, ts, project, summary, optional details, tags,
@@ -395,6 +499,7 @@ class Database:
         if len(items) > BULK_MAX:
             raise ValueError(f"at most {BULK_MAX} entries per request")
         result: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+        owner = clean_owner(owner)
         now = to_db_ts(utcnow())
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -406,7 +511,7 @@ class Database:
                         result["errors"].append({"index": i, "error": str(e)})
                         continue
                     existing = self._conn.execute(
-                        "SELECT id FROM entries WHERE external_id = ?", (row["external_id"],)
+                        "SELECT id FROM entries WHERE owner = ? AND external_id = ?", (owner, row["external_id"])
                     ).fetchone()
                     if existing and not update:
                         result["skipped"] += 1
@@ -420,10 +525,10 @@ class Database:
                         result["updated"] += 1
                     else:
                         self._conn.execute(
-                            """INSERT INTO entries (ts, created_at, agent, source, project, summary, details,
+                            """INSERT INTO entries (owner, ts, created_at, agent, source, project, summary, details,
                                                     tags, duration_min, session_id, external_id)
-                               VALUES (?, ?, ?, 'import', ?, ?, ?, ?, ?, ?, ?)""",
-                            (row["ts"], now, agent, row["project"], row["summary"], row["details"], row["tags"],
+                               VALUES (?, ?, ?, ?, 'import', ?, ?, ?, ?, ?, ?, ?)""",
+                            (owner, row["ts"], now, agent, row["project"], row["summary"], row["details"], row["tags"],
                              row["duration_min"], row["session_id"], row["external_id"]),
                         )
                         result["created"] += 1
@@ -445,7 +550,8 @@ class Database:
 
     # ------------------------------------------------------------------ tokens
 
-    def add_token(self, name: str, token_hash: str, scopes: Iterable[str]) -> TokenRecord:
+    def add_token(self, owner: str, name: str, token_hash: str, scopes: Iterable[str]) -> TokenRecord:
+        owner = clean_owner(owner)
         scope_list = sorted(set(scopes))
         bad = [s for s in scope_list if s not in SCOPES]
         if bad or not scope_list:
@@ -453,15 +559,17 @@ class Database:
         with self._lock:
             try:
                 self._conn.execute(
-                    "INSERT INTO tokens (name, token_hash, scopes, created_at) VALUES (?, ?, ?, ?)",
-                    (name, token_hash, ",".join(scope_list), to_db_ts(utcnow())),
+                    "INSERT INTO tokens (owner, name, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (owner, name, token_hash, ",".join(scope_list), to_db_ts(utcnow())),
                 )
             except sqlite3.IntegrityError as e:
                 raise ValueError(f"a token named '{name}' already exists") from e
-            return self.get_token(name)
+            return self.get_token(owner, name)
 
-    def get_token(self, name: str) -> TokenRecord:
-        row = self._conn.execute("SELECT * FROM tokens WHERE name = ?", (name,)).fetchone()
+    def get_token(self, owner: str, name: str) -> TokenRecord:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM tokens WHERE owner = ? AND name = ?",
+                                     (clean_owner(owner), name)).fetchone()
         if row is None:
             raise KeyError(name)
         return TokenRecord.from_row(row)
@@ -484,21 +592,27 @@ class Database:
             row = self._conn.execute("SELECT * FROM tokens WHERE token_hash = ?", (token_hash,)).fetchone()
         return TokenRecord.from_row(row) if row else None
 
-    def list_tokens(self) -> list[TokenRecord]:
+    def list_tokens(self, *, owner: str | None) -> list[TokenRecord]:
+        """Tokens of one owner; owner=None lists all (only for the admin command line)."""
         with self._lock:
-            rows = self._conn.execute("SELECT * FROM tokens ORDER BY name").fetchall()
+            if owner is None:
+                rows = self._conn.execute("SELECT * FROM tokens ORDER BY owner, name").fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM tokens WHERE owner = ? ORDER BY name",
+                                          (clean_owner(owner),)).fetchall()
         return [TokenRecord.from_row(r) for r in rows]
 
-    def revoke_token(self, name: str) -> TokenRecord:
+    def revoke_token(self, owner: str, name: str) -> TokenRecord:
+        owner = clean_owner(owner)
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE tokens SET revoked_at = ? WHERE name = ? AND revoked_at IS NULL",
-                (to_db_ts(utcnow()), name),
+                "UPDATE tokens SET revoked_at = ? WHERE owner = ? AND name = ? AND revoked_at IS NULL",
+                (to_db_ts(utcnow()), owner, name),
             )
             if cur.rowcount == 0:
-                self.get_token(name)  # raises KeyError when unknown
+                self.get_token(owner, name)  # raises KeyError when unknown
                 raise ValueError(f"token '{name}' is already revoked")
-            return self.get_token(name)
+            return self.get_token(owner, name)
 
     def touch_token(self, token_id: int, when: datetime | None = None) -> None:
         with self._lock:
