@@ -13,14 +13,12 @@ An MCP server that collects work log entries from AI agents (Claude Code, Docker
 
 Run the server on your machine and connect Claude Code to it. For a server that other devices or claude.ai reach over HTTPS, continue with the [setup guide](#setup-guide).
 
-**With Docker:**
+**With Docker** (image for amd64 and arm64 from GitHub Container Registry):
 
 ```bash
-git clone https://github.com/axute/worklog-mcp.git && cd worklog-mcp
-docker build -t worklog-mcp .
 mkdir -p ~/worklog-data && sudo chown 99:100 ~/worklog-data      # container runs as UID 99; skip on Docker Desktop
 docker run -d --name worklog-mcp --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 -v ~/worklog-data:/data worklog-mcp
+  -p 127.0.0.1:8000:8000 -v ~/worklog-data:/data ghcr.io/axute/worklog-mcp:latest
 
 docker exec worklog-mcp worklog token create laptop --owner me   # prints the token (wl_...) once
 ```
@@ -61,6 +59,8 @@ From an empty server to agents that log on their own, reachable over HTTPS. You 
 
 ### 1. Get the code and a data directory
 
+The compose files are in the repository; the image itself can come from `ghcr.io/axute/worklog-mcp` (see below) or be built from the checkout.
+
 ```bash
 git clone https://github.com/axute/worklog-mcp.git
 cd worklog-mcp
@@ -78,7 +78,7 @@ cp compose.example.yaml compose.yaml
 cp .env.example .env      # set WORKLOG_HOST, TRAEFIK_NETWORK, WORKLOG_DATA, WORKLOG_TZ
 ```
 
-Both files are ignored by git. If Traefik has no default entrypoint with a certificate resolver, uncomment the `entrypoints` and `tls.certresolver` labels in `compose.yaml`. Don't add a `compress` middleware: it can buffer streamed MCP responses.
+Both files are ignored by git. `compose.yaml` uses the published image `ghcr.io/axute/worklog-mcp:latest`; to build from the checkout instead, swap in the commented `build:` lines. If Traefik has no default entrypoint with a certificate resolver, uncomment the `entrypoints` and `tls.certresolver` labels in `compose.yaml`. Don't add a `compress` middleware: it can buffer streamed MCP responses.
 
 **Behind another reverse proxy** (nginx, Caddy, …) or for a first try on one machine, publish the port instead of the Traefik labels:
 
@@ -86,8 +86,7 @@ Both files are ignored by git. If Traefik has no default entrypoint with a certi
 # compose.yaml
 services:
   worklog:
-    build: .
-    image: worklog-mcp:local
+    image: ghcr.io/axute/worklog-mcp:latest
     container_name: worklog-mcp
     restart: unless-stopped
     environment:
@@ -103,7 +102,7 @@ Plain HTTP is fine for `localhost`. Anything that leaves the machine must go thr
 ### 3. Start and check
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 docker inspect --format '{{.State.Health.Status}}' worklog-mcp     # -> healthy (after ~10 s)
 curl -i https://worklog.example.com/healthz                         # -> 200 ok
 curl -i -X POST https://worklog.example.com/mcp                     # -> 401: no token, as it should be
@@ -204,7 +203,8 @@ docker exec worklog-mcp worklog export --owner alice --since 2026-01-01 | tail
 ### 9. Backups and updates
 
 - **Backup**, e.g. nightly via cron or the Unraid User Scripts plugin: `docker exec worklog-mcp worklog backup --keep 14`. This writes a consistent copy to `backups/` in the data directory and keeps the newest 14. To keep backups elsewhere, mount a second volume (see `compose.example.yaml`) and add `--dir /backups`; that directory must be writable for UID 99 / GID 100.
-- **Update:** `git pull`, then `docker compose build && docker compose up -d --force-recreate`. A plain restart keeps running the old image. Database migrations run on start.
+- **Update:** with the published image `docker compose pull && docker compose up -d`; when building from the checkout `git pull`, then `docker compose build && docker compose up -d --force-recreate`. A plain restart keeps running the old image. Database migrations run on start.
+- **Images:** `ghcr.io/axute/worklog-mcp` is built by GitHub Actions after the tests pass: `:latest` follows `main`, `:sha-<commit>` pins a build, release tags `v1.2.3` also publish `:1.2.3`, `:1.2` and `:1`.
 - **Older installations** without user support: see [Users](#users) before updating.
 
 ### Optional next steps

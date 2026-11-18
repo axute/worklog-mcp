@@ -1,7 +1,7 @@
 # Example stack behind Traefik. Copy to compose.yaml (not tracked) and either
 # fill in the values or put them into a .env file next to it (see .env.example).
 #
-#   docker compose up -d --build
+#   docker compose up -d
 #   docker exec -it worklog-mcp worklog token create <agent-name> --owner <user>
 #
 # No port is published: the container is only reachable through Traefik.
@@ -10,8 +10,11 @@
 
 services:
   worklog:
-    build: ${WORKLOG_SRC:-.}
-    image: worklog-mcp:local
+    # published image (amd64/arm64); pin a version like :0.1 once released
+    image: ghcr.io/axute/worklog-mcp:latest
+    # to build from this checkout instead, replace the line above with:
+    # build: ${WORKLOG_SRC:-.}
+    # image: worklog-mcp:local
     container_name: worklog-mcp
     restart: unless-stopped
     environment:
