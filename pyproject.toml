@@ -24,6 +24,7 @@ test = [
 
 [project.scripts]
 worklog = "worklog.cli:main"
+worklog-server = "worklog.server:main"
 worklog-import = "worklog_import.cli:main"
 
 [tool.setuptools.packages.find]

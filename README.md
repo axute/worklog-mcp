@@ -9,11 +9,48 @@ An MCP server that collects work log entries from AI agents (Claude Code, Docker
 - Several users, strictly separated; optional sign-in through your reverse proxy (e.g. Authelia)
 - Web view with search, overview charts and token management
 
-New here? Follow the [setup guide](#setup-guide) from an empty server to the first logged entry.
+## Quick start
+
+Run the server on your machine and connect Claude Code to it. For a server that other devices or claude.ai reach over HTTPS, continue with the [setup guide](#setup-guide).
+
+**With Docker:**
+
+```bash
+git clone https://github.com/axute/worklog-mcp.git && cd worklog-mcp
+docker build -t worklog-mcp .
+mkdir -p ~/worklog-data && sudo chown 99:100 ~/worklog-data      # container runs as UID 99; skip on Docker Desktop
+docker run -d --name worklog-mcp --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 -v ~/worklog-data:/data worklog-mcp
+
+docker exec worklog-mcp worklog token create laptop --owner me   # prints the token (wl_...) once
+```
+
+**Without Docker** (Python 3.12 or newer):
+
+```bash
+python3 -m venv ~/.worklog && . ~/.worklog/bin/activate
+pip install git+https://github.com/axute/worklog-mcp.git           # needs git
+
+export WORKLOG_DB=~/worklog/worklog.db WORKLOG_HOST=127.0.0.1    # default: /data/worklog.db on 0.0.0.0
+worklog-server                                                    # runs in the foreground; Ctrl+C stops it
+
+# in a second terminal, with the same WORKLOG_DB:
+worklog token create laptop --owner me                            # prints the token (wl_...) once
+```
+
+**Connect Claude Code** and check:
+
+```bash
+claude mcp add --transport http --scope user worklog http://127.0.0.1:8000/mcp \
+  --header "Authorization: Bearer wl_..."
+claude mcp list                                                   # worklog … ✓ Connected
+```
+
+In a new Claude Code session, ask for example *"Log to worklog: project test, summary 'worklog is running'"*. The entry shows up in the web view at <http://127.0.0.1:8000/ui/> (sign in there with a token that has the `read` scope; `laptop` has it), or with `worklog export --owner me`. To make agents log on their own, add the [agent rule](integrations/agent-rule.md) to `~/.claude/CLAUDE.md`.
 
 ## Setup guide
 
-You need a host with Docker and Docker Compose, and a way to reach the server over HTTPS.
+From an empty server to agents that log on their own, reachable over HTTPS. You need a host with Docker and Docker Compose, and a way to reach the server over HTTPS.
 
 **Who connects from where** decides how reachable the server must be:
 
@@ -69,7 +106,7 @@ Plain HTTP is fine for `localhost`. Anything that leaves the machine must go thr
 docker compose up -d --build
 docker inspect --format '{{.State.Health.Status}}' worklog-mcp     # -> healthy (after ~10 s)
 curl -i https://worklog.example.com/healthz                         # -> 200 ok
-curl -i https://worklog.example.com/mcp                             # -> 401: no token, as it should be
+curl -i -X POST https://worklog.example.com/mcp                     # -> 401: no token, as it should be
 ```
 
 ### 4. Create a token
@@ -320,7 +357,7 @@ python -m worklog_import upload            # --update overwrites already importe
 | `WORKLOG_LEGACY_OWNER` | – | user who gets entries and tokens from before multi-user support; needed once, for the upgrade |
 | `WORKLOG_LOGOUT_URL` | – | sign-out link shown to proxy users, e.g. `https://auth.example.com/logout` |
 
-Run: `python -m worklog.server`. `GET /healthz` answers `ok` without a token (for health checks); everything under `/mcp` needs `Authorization: Bearer <token>`.
+Run: `worklog-server` (or `python -m worklog.server`). `GET /healthz` answers `ok` without a token (for health checks); everything under `/mcp` needs `Authorization: Bearer <token>`.
 
 ## Development
 
