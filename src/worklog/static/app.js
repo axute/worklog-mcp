@@ -25,6 +25,10 @@ const TEXT = {
     revokeConfirm: 'Revoke the token "{0}"? Agents using it lose access immediately. The name cannot be reused.',
     colName: 'Name', colScopes: 'Rights', colCreated: 'Created', colUsed: 'Last used', colState: 'Status',
     active: 'active', revokedAt: 'revoked {0}', never: 'never', pickScope: 'Choose at least one right.',
+    edit: 'Edit', del: 'Delete', save: 'Save', cancel: 'Cancel', summaryLbl: 'Summary', detailsLbl: 'Details',
+    tagsLbl: 'Tags (comma separated)', minutesLbl: 'Minutes', deleteConfirm: 'Delete this entry? This cannot be undone.',
+    renameProject: 'Rename project …', renamePrompt: 'New name for the project "{0}":',
+    mergeConfirm: 'The project "{0}" already exists. Move the entries of "{2}" ({1}) into it?', export: 'Export:',
     nameTaken: 'This name is already taken (also by revoked tokens).', badName: 'Name: 1–64 characters, letters, digits, - _ or .',
   },
   de: {
@@ -47,6 +51,11 @@ const TEXT = {
     revokeConfirm: 'Token „{0}“ widerrufen? Agents, die es nutzen, verlieren sofort den Zugriff. Der Name ist danach nicht wieder verwendbar.',
     colName: 'Name', colScopes: 'Rechte', colCreated: 'Angelegt', colUsed: 'Zuletzt benutzt', colState: 'Status',
     active: 'aktiv', revokedAt: 'widerrufen {0}', never: 'nie', pickScope: 'Wähle mindestens ein Recht.',
+    edit: 'Bearbeiten', del: 'Löschen', save: 'Speichern', cancel: 'Abbrechen', summaryLbl: 'Zusammenfassung',
+    detailsLbl: 'Details', tagsLbl: 'Tags (durch Komma getrennt)', minutesLbl: 'Minuten',
+    deleteConfirm: 'Diesen Eintrag löschen? Das lässt sich nicht rückgängig machen.',
+    renameProject: 'Projekt umbenennen …', renamePrompt: 'Neuer Name für das Projekt „{0}“:',
+    mergeConfirm: 'Das Projekt „{0}“ gibt es schon. Die Einträge von „{2}“ ({1}) dorthin verschieben?', export: 'Export:',
     nameTaken: 'Dieser Name ist schon vergeben (auch widerrufene Tokens zählen).', badName: 'Name: 1–64 Zeichen, Buchstaben, Ziffern, - _ oder .',
   },
 };
@@ -100,7 +109,8 @@ let total = 0;
 let seq = 0;             // discards answers of outdated requests
 let overview = null;     // last stats answer
 let allProjects = false;
-let me = null;           // { user, agent, via, manage_tokens, logout_url }
+let me = null;           // { user, agent, via, manage_tokens, can_edit, logout_url }
+let facets = null;       // last /api/facets answer
 const TABS = () => (me && me.manage_tokens ? ['entries', 'overview', 'tokens'] : ['entries', 'overview']);
 
 function readHash() {
@@ -223,6 +233,11 @@ function syncControls() {
   $('view-overview').hidden = state.tab !== 'overview';
   $('view-tokens').hidden = state.tab !== 'tokens';
   $('filters').hidden = state.tab === 'tokens';
+  $('f-rename').hidden = !(me && me.can_edit && state.project && state.tab !== 'tokens');
+  $('export').hidden = state.tab === 'tokens';
+  const q = new URLSearchParams(Object.entries(filterParams()).filter(([, v]) => v !== '' && v != null));
+  $('export-md').href = `api/export?${q}&format=md`;
+  $('export-csv').href = `api/export?${q}&format=csv`;
   if (state.tab !== 'tokens') hideNewToken();   // a new token never lingers on other tabs
 }
 function changed() {
@@ -301,9 +316,93 @@ function entryRow(e) {
     for (const tag of e.tags) tags.append(el('span', 'chip', tag));
     body.append(tags);
   }
-  body.append(el('div', 'muted small', `${e.agent} · ${e.source} · #${e.id}`));
+  const meta = el('div', 'e-actions small');
+  meta.append(el('span', 'muted', `${e.agent} · ${e.source} · #${e.id}`));
+  if (me && me.can_edit) {
+    const edit = el('button', 'link', t('edit'));
+    edit.type = 'button';
+    edit.addEventListener('click', () => body.replaceWith(entryForm(e, d)));
+    const del = el('button', 'danger', t('del'));
+    del.type = 'button';
+    del.addEventListener('click', () => deleteEntry(e));
+    meta.append(edit, del);
+  }
+  body.append(meta);
   d.append(s, body);
   return d;
+}
+
+// ---------------------------------------------------------------- changes (proxy sign-in)
+
+function field(label, input, wide) {
+  const l = el('label', 'field' + (wide ? ' wide' : ''));
+  l.append(el('span', null, label), input);
+  return l;
+}
+function entryForm(e, details) {
+  const form = el('form', 'e-body e-form');
+  const project = el('input'); project.value = e.project; project.required = true; project.setAttribute('list', 'project-names');
+  const summary = el('input'); summary.value = e.summary; summary.required = true; summary.maxLength = 300;
+  const text = el('textarea'); text.value = e.details || '';
+  const tags = el('input'); tags.value = (e.tags || []).join(', ');
+  const minutes = el('input'); minutes.type = 'number'; minutes.min = '0'; minutes.value = e.duration_min ?? '';
+  const error = el('p', 'error');
+  const save = el('button', 'primary', t('save')); save.type = 'submit';
+  const cancel = el('button', 'link', t('cancel')); cancel.type = 'button';
+  cancel.addEventListener('click', () => details.replaceWith(entryRow(e)));
+  const buttons = el('div', 'buttons');
+  buttons.append(save, cancel);
+  form.append(field(t('project'), project), field(t('minutesLbl'), minutes), field(t('summaryLbl'), summary, true),
+              field(t('detailsLbl'), text, true), field(t('tagsLbl'), tags, true), buttons, error);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    error.textContent = '';
+    const changes = {
+      project: project.value.trim(), summary: summary.value.trim(), details: text.value,
+      tags: tags.value.split(',').map((x) => x.trim()).filter(Boolean),
+      duration_min: minutes.value === '' ? null : Number(minutes.value),
+    };
+    try {
+      const updated = await apiPost(`api/entries/${e.id}`, changes);
+      shown = shown.map((x) => (x.id === e.id ? updated : x));
+      const row = entryRow(updated);
+      row.open = true;
+      details.replaceWith(row);
+      loadFacets();
+    } catch (err) {
+      if (err.message !== '401') error.textContent = err.message;
+    }
+  });
+  setTimeout(() => summary.focus(), 0);
+  return form;
+}
+async function deleteEntry(e) {
+  if (!confirm(t('deleteConfirm'))) return;
+  try {
+    await apiPost(`api/entries/${e.id}/delete`);
+    shown = shown.filter((x) => x.id !== e.id);
+    total -= 1;
+    renderEntries();
+    loadFacets();
+  } catch (err) {
+    if (err.message !== '401') alert(t('error', err.message));
+  }
+}
+async function renameProject() {
+  const from = state.project;
+  const to = (prompt(t('renamePrompt', from), from) || '').trim();
+  if (!to || to === from) return;
+  const target = facets && facets.projects.find((p) => p.name === to);
+  const source = facets && facets.projects.find((p) => p.name === from);
+  if (target && !confirm(t('mergeConfirm', to, num(source ? source.entries : 0), from))) return;
+  try {
+    await apiPost('api/projects/rename', { from, to });
+    state.project = to;          // before loading the facets, so the old name is not kept as an extra option
+    await loadFacets();
+    changed();
+  } catch (err) {
+    if (err.message !== '401') alert(t('error', err.message));
+  }
 }
 
 // ---------------------------------------------------------------- overview
@@ -571,14 +670,19 @@ async function start(session) {
   $('logout-link').hidden = !session.logout_url;
   if (session.logout_url) $('logout-link').href = session.logout_url;
   readHash();
-  try {
-    const f = await api('api/facets');
-    fillSelect('f-project', t('allProjects'), f.projects, state.project);
-    fillSelect('f-agent', t('allAgents'), f.agents, state.agent);
-    fillSelect('f-source', t('allSources'), f.sources, state.source);
-  } catch (e) { if (e.message === '401') return; }
+  try { await loadFacets(); } catch (e) { if (e.message === '401') return; }
   syncControls();
   refresh();
+}
+async function loadFacets() {
+  const f = await api('api/facets');
+  facets = f;
+  fillSelect('f-project', t('allProjects'), f.projects, state.project);
+  fillSelect('f-agent', t('allAgents'), f.agents, state.agent);
+  fillSelect('f-source', t('allSources'), f.sources, state.source);
+  const list = $('project-names');
+  list.textContent = '';
+  for (const p of f.projects) list.append(new Option(p.name));
 }
 
 function init() {
@@ -620,6 +724,7 @@ function init() {
   }).observe($('timeline'));
 
   $('token-form').addEventListener('submit', onCreateToken);
+  $('f-rename').addEventListener('click', renameProject);
   $('token-copy').addEventListener('click', copyToken);
   $('token-done').addEventListener('click', hideNewToken);
   loadSession();

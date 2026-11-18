@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 from collections import OrderedDict
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from .db import Entry
@@ -106,3 +107,46 @@ def stats(entries: list[Entry], tz) -> dict[str, Any]:
                            key=lambda x: (-x["duration_min"], -x["entries"], x["project"])),
         "days": [{"date": k, **days[k]} for k in sorted(days)],
     }
+
+
+PERIODS = ("this-week", "last-week", "this-month", "last-month")
+
+
+def period_bounds(kind: str, tz, now: datetime | None = None, ago: int | None = None) -> tuple[datetime, datetime, str]:
+    """(start, end, label) of a calendar week (Monday to Monday) or month in the time zone tz.
+
+    kind: one of PERIODS, or "week"/"month" together with `ago` (0 = current, 1 = previous, ...).
+    The label is the ISO week ("2026-W46") or the month ("2026-11")."""
+    if kind in PERIODS:
+        unit, ago = kind.split("-")[1], (0 if kind.startswith("this") else 1)
+    elif kind in ("week", "month"):
+        unit, ago = kind, int(ago or 0)
+    else:
+        raise ValueError(f"period must be one of {', '.join(PERIODS)}")
+    if ago < 0:
+        raise ValueError("ago must not be negative")
+    today = (now or datetime.now(tz)).astimezone(tz).date()
+    if unit == "week":
+        monday = today - timedelta(days=today.weekday()) - timedelta(weeks=ago)
+        start = datetime.combine(monday, time(), tz)
+        end = datetime.combine(monday + timedelta(weeks=1), time(), tz)
+        year, week, _ = monday.isocalendar()
+        return start, end, f"{year}-W{week:02d}"
+    month_index = today.year * 12 + today.month - 1 - ago
+    year, month = divmod(month_index, 12)
+    start = datetime(year, month + 1, 1, tzinfo=tz)
+    ny, nm = divmod(month_index + 1, 12)
+    end = datetime(ny, nm + 1, 1, tzinfo=tz)
+    return start, end, f"{year}-{month + 1:02d}"
+
+
+def summary_line(entries: list[Entry], label: str) -> str:
+    """One line for notifications: '2026-W46: 42 entries, 31.5 h, 7 projects (top: a, b, c)'."""
+    minutes = sum(e.duration_min or 0 for e in entries)
+    per_project: dict[str, int] = {}
+    for e in entries:
+        per_project[e.project] = per_project.get(e.project, 0) + (e.duration_min or 0)
+    top = sorted(per_project, key=lambda p: (-per_project[p], p))[:3]
+    hours = f"{minutes / 60:.1f}".rstrip("0").rstrip(".")
+    line = f"{label}: {len(entries)} entries, {hours} h, {len(per_project)} projects"
+    return line + (f" (top: {', '.join(top)})" if top else "")

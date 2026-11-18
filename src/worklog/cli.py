@@ -4,6 +4,7 @@
     worklog token list [--owner USER]
     worklog token revoke <name> --owner USER
     worklog export --owner USER [--format md|csv] [--since DATE] [--until DATE] [--project P] [--output FILE]
+    worklog report --owner USER [--period last-week|this-week|last-month|this-month] [--project P] [--dir DIR]
     worklog backup [--dir DIR] [--keep 14]
 
 Every entry and token belongs to a user (the owner). With sign-in through a
@@ -20,7 +21,7 @@ from pathlib import Path
 from .auth import create_token
 from .config import Settings
 from .db import Database, utcnow
-from .report import to_csv, to_markdown
+from .report import PERIODS, period_bounds, summary_line, to_csv, to_markdown
 
 
 def _local(value: str, tz) -> datetime:
@@ -57,6 +58,13 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--until", help="ISO date, exclusive (default: now)")
     ex.add_argument("--project")
     ex.add_argument("--output", "-o", help="file instead of stdout")
+
+    rp = sub.add_parser("report", help="Markdown report of a week or month, e.g. for a weekly notification")
+    rp.add_argument("--owner", required=True, help="whose entries")
+    rp.add_argument("--period", choices=PERIODS, default="last-week", help="calendar week or month (default: last-week)")
+    rp.add_argument("--project")
+    rp.add_argument("--dir", help="write worklog-<owner>-<period>.md there and print a one-line summary "
+                                  "(for notifications); default: Markdown to stdout")
 
     bk = sub.add_parser("backup", help="consistent copy of the database; keeps the newest N")
     bk.add_argument("--dir", help="target directory (default: backups/ next to the database)")
@@ -99,6 +107,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{len(entries)} entries written to {args.output}", file=sys.stderr)
             else:
                 sys.stdout.write(text)
+        elif args.command == "report":
+            start, end, label = period_bounds(args.period, tz)
+            entries = db.entries_between(start, end, owner=args.owner, project=args.project)
+            title = f"Work log {label}" + (f" · {args.project}" if args.project else "")
+            text = to_markdown(entries, tz, title=title)
+            line = summary_line(entries, label + (f" {args.project}" if args.project else ""))
+            if args.dir:
+                name = "-".join(filter(None, ["worklog", args.owner, label, args.project])) + ".md"
+                name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+                target = Path(args.dir) / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+                print(line)
+                print(f"report written: {target}", file=sys.stderr)
+            else:
+                sys.stdout.write(text)
+                print(line, file=sys.stderr)
         elif args.command == "backup":
             if args.keep < 1:
                 raise ValueError("--keep must be at least 1")

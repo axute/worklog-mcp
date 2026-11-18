@@ -109,7 +109,7 @@ def test_login_flow_and_read_endpoints(server, db, tokens):
         assert "HttpOnly" in cookie and "SameSite=strict" in cookie.replace("Strict", "strict")
         assert tokens["r"] not in cookie and "Secure" not in cookie  # plain http in tests
         assert c.get("/ui/session").json() == {"user": "alice", "agent": "reader", "via": "session",
-                                               "manage_tokens": False, "timezone": "Europe/Berlin", "logout_url": ""}
+                                               "manage_tokens": False, "can_edit": False, "timezone": "Europe/Berlin", "logout_url": ""}
 
         data = c.get("/ui/api/entries", params={"project": "website", "limit": 2}).json()
         assert data["total"] == 3 and len(data["entries"]) == 2
@@ -196,7 +196,7 @@ def test_proxy_sign_in(proxy, db):
     seed(db)
     s = httpx.get(proxy + "/ui/session", headers=as_user()).json()
     assert s == {"user": "alice", "agent": None, "via": "proxy", "manage_tokens": True,
-                 "timezone": "Europe/Berlin", "logout_url": "https://auth.example/logout"}
+                 "can_edit": True, "timezone": "Europe/Berlin", "logout_url": "https://auth.example/logout"}
     assert httpx.get(proxy + "/ui/api/entries", headers=as_user()).json()["total"] == 4
 
 

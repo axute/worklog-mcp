@@ -7,6 +7,10 @@
     GET  /ui/api/entries            filtered list: q, project, agent, source, since, until, limit, offset
     GET  /ui/api/facets             projects, agents and sources with entry counts
     GET  /ui/api/stats              totals, per project and per day for the same filters
+    POST /ui/api/entries/{id}       change an own entry: project, summary, details, tags, duration_min (proxy sign-in)
+    POST /ui/api/entries/{id}/delete                                              (proxy sign-in)
+    POST /ui/api/projects/rename    {"from", "to"}: rename, or merge into an existing project (proxy sign-in)
+    GET  /ui/api/export             same filters as /ui/api/entries, format=md|csv -> file download
     GET  /ui/api/tokens             own tokens (proxy sign-in)
     POST /ui/api/tokens             {"name", "scopes"} -> new own token, shown once (proxy sign-in)
     POST /ui/api/tokens/{name}/revoke  revoke an own token (proxy sign-in)
@@ -39,13 +43,13 @@ from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from .auth import (NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_token, create_session, create_token,
                    owner_of)
 from .config import Settings
 from .db import SCOPES, Database, as_dict
-from .report import stats
+from .report import stats, to_csv, to_markdown
 
 log = logging.getLogger("worklog.webui")
 
@@ -137,12 +141,12 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return None, _json({"error": "token lacks the 'read' scope"}, 403)
         return Viewer(owner_of(access), access.client_id, via, manage_tokens=False), None
 
-    def token_admin(request: Request, change: bool) -> tuple[Viewer | None, JSONResponse | None]:
+    def manager(request: Request, change: bool) -> tuple[Viewer | None, JSONResponse | None]:
         who, err = viewer(request)
         if err:
             return None, err
         if not who.manage_tokens:
-            return None, _json({"error": "only users signed in through the proxy may manage tokens"}, 403)
+            return None, _json({"error": "only users signed in through the proxy may change entries or tokens"}, 403)
         if change and not (_same_origin(request, required=True)
                            and request.headers.get("content-type", "").split(";")[0].strip() == "application/json"):
             return None, _json({"error": "cross-site request"}, 403)
@@ -193,6 +197,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         if err:
             return err
         return _json({"user": who.owner, "agent": who.agent, "via": who.via, "manage_tokens": who.manage_tokens,
+                      "can_edit": who.manage_tokens,
                       "timezone": str(tz),
                       "logout_url": settings.logout_url if who.via == "proxy" else ""})
 
@@ -231,6 +236,87 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return _json(stats(entries, tz))
 
     reads("/ui/api", allow_cookie=True)
+
+    @mcp.custom_route("/ui/api/export", methods=["GET"], include_in_schema=False)
+    async def export(request: Request) -> Response:
+        who, err = viewer(request)
+        if err:
+            return err
+        fmt = request.query_params.get("format", "md")
+        if fmt not in ("md", "csv"):
+            return _json({"error": "format must be md or csv"}, 400)
+        try:
+            f = filters(request)
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        entries, _ = db.query_entries(owner=who.owner, **f, limit=None)
+        entries.reverse()  # oldest first, like `worklog export`
+        span = "-".join(x.astimezone(tz).strftime("%Y%m%d") for x in (f["since"], f["until"]) if x) or "all"
+        name = "-".join(filter(None, ["worklog", f["project"], span]))
+        name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name) + "." + fmt
+        if fmt == "csv":
+            body, media = to_csv(entries, tz), "text/csv; charset=utf-8"
+        else:
+            body, media = to_markdown(entries, tz, title=f"Work log {who.owner}"), "text/markdown; charset=utf-8"
+        return PlainTextResponse(body, media_type=media, headers={
+            "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store", **SECURITY_HEADERS})
+
+    # ------------------------------------------------------------------ changes (proxy sign-in)
+
+    async def json_object(request: Request) -> dict:
+        body = json.loads(await request.body() or b"{}")
+        if not isinstance(body, dict):
+            raise ValueError("expected a JSON object")
+        return body
+
+    @mcp.custom_route("/ui/api/entries/{entry_id:int}", methods=["POST"], include_in_schema=False)
+    async def change_entry(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        entry_id = request.path_params["entry_id"]
+        try:
+            body = await json_object(request)
+            editable = {"project", "summary", "details", "tags", "duration_min"}
+            if set(body) - editable:
+                raise ValueError(f"cannot change: {', '.join(sorted(set(body) - editable))}")
+            entry = db.update_entry(owner=who.owner, entry_id=entry_id, **body)
+        except KeyError:
+            return _json({"error": "unknown entry"}, 404)
+        except (ValueError, TypeError) as e:
+            return _json({"error": str(e)}, 400)
+        log.info("entry_updated", extra={"entry_id": entry_id, "by": who.owner, "source": "web"})
+        return _json(as_dict(entry, tz))
+
+    @mcp.custom_route("/ui/api/entries/{entry_id:int}/delete", methods=["POST"], include_in_schema=False)
+    async def remove_entry(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        entry_id = request.path_params["entry_id"]
+        try:
+            db.delete_entry(owner=who.owner, entry_id=entry_id)
+        except KeyError:
+            return _json({"error": "unknown entry"}, 404)
+        log.info("entry_deleted", extra={"entry_id": entry_id, "by": who.owner, "source": "web"})
+        return _json({"deleted": entry_id})
+
+    @mcp.custom_route("/ui/api/projects/rename", methods=["POST"], include_in_schema=False)
+    async def rename_project(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        try:
+            body = await json_object(request)
+            old, new = str(body.get("from") or ""), str(body.get("to") or "").strip()
+            merged = any(p["project"] == new for p in db.list_projects(owner=who.owner))
+            moved = db.rename_project(owner=who.owner, old=old, new=new)
+        except KeyError:
+            return _json({"error": "unknown project"}, 404)
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        log.info("project_renamed", extra={"by": who.owner, "status": {"entries": moved, "merged": merged}})
+        return _json({"from": old, "to": new, "entries": moved, "merged": merged})
     reads("/api", allow_cookie=False)   # scripts: bearer only, so cookies never reach /api
 
     # ------------------------------------------------------------------ own tokens (proxy sign-in)
@@ -241,12 +327,12 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/ui/api/tokens", methods=["GET"], include_in_schema=False)
     async def list_tokens(request: Request) -> Response:
-        who, err = token_admin(request, change=False)
+        who, err = manager(request, change=False)
         return err or _json({"scopes": list(SCOPES), "tokens": [token_dict(r) for r in db.list_tokens(owner=who.owner)]})
 
     @mcp.custom_route("/ui/api/tokens", methods=["POST"], include_in_schema=False)
     async def new_token(request: Request) -> Response:
-        who, err = token_admin(request, change=True)
+        who, err = manager(request, change=True)
         if err:
             return err
         try:
@@ -265,7 +351,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/ui/api/tokens/{name}/revoke", methods=["POST"], include_in_schema=False)
     async def revoke_token(request: Request) -> Response:
-        who, err = token_admin(request, change=True)
+        who, err = manager(request, change=True)
         if err:
             return err
         name = request.path_params["name"]

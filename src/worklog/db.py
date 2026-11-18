@@ -361,6 +361,82 @@ class Database:
             raise KeyError(entry_id)
         return Entry.from_row(row)
 
+    def get_own_entry(self, *, owner: str, entry_id: int) -> Entry:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM entries WHERE owner = ? AND id = ?",
+                                     (clean_owner(owner), int(entry_id))).fetchone()
+        if row is None:
+            raise KeyError(entry_id)
+        return Entry.from_row(row)
+
+    def update_entry(self, *, owner: str, entry_id: int, agent: str | None = None, **changes: Any) -> Entry:
+        """Change project, summary, details, tags or duration_min of an own entry.
+        With `agent`, only entries written by that agent can be changed (used by the MCP tool).
+        Only the given fields change; details=None/"" and duration_min=None clear them."""
+        unknown = set(changes) - {"project", "summary", "details", "tags", "duration_min"}
+        if unknown:
+            raise ValueError(f"cannot change: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise ValueError("nothing to change")
+        sets: dict[str, Any] = {}
+        if "project" in changes:
+            project = str(changes["project"] or "").strip()
+            if not project:
+                raise ValueError("project must not be empty")
+            sets["project"] = project
+        if "summary" in changes:
+            summary = str(changes["summary"] or "").strip()
+            if not summary or len(summary) > SUMMARY_MAX:
+                raise ValueError(f"summary must have 1-{SUMMARY_MAX} characters")
+            sets["summary"] = summary
+        if "details" in changes:
+            d = changes["details"]
+            sets["details"] = (str(d).strip() or None) if d is not None else None
+        if "tags" in changes:
+            tags = changes["tags"]
+            if tags is not None and not isinstance(tags, list):
+                raise ValueError("tags must be a list")
+            tag_list = _clean_tags(tags)
+            sets["tags"] = json.dumps(tag_list, ensure_ascii=False) if tag_list else None
+        if "duration_min" in changes:
+            d = changes["duration_min"]
+            if d is not None and (not isinstance(d, int) or isinstance(d, bool) or d < 0):
+                raise ValueError("duration_min must be a non-negative integer")
+            sets["duration_min"] = d
+        where, args = "owner = ? AND id = ?", [clean_owner(owner), int(entry_id)]
+        if agent is not None:
+            where += " AND agent = ?"
+            args.append(agent)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE entries SET {', '.join(f'{k} = ?' for k in sets)} WHERE {where}",
+                [*sets.values(), *args])
+            if cur.rowcount == 0:
+                raise KeyError(entry_id)
+        return self.get_own_entry(owner=owner, entry_id=entry_id)
+
+    def delete_entry(self, *, owner: str, entry_id: int) -> None:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM entries WHERE owner = ? AND id = ?",
+                                     (clean_owner(owner), int(entry_id)))
+        if cur.rowcount == 0:
+            raise KeyError(entry_id)
+
+    def rename_project(self, *, owner: str, old: str, new: str) -> int:
+        """Move all entries of project `old` to `new` (renames, or merges into an existing project).
+        Returns the number of moved entries."""
+        new = (new or "").strip()
+        if not new:
+            raise ValueError("new project name must not be empty")
+        if new == old:
+            return 0
+        with self._lock:
+            cur = self._conn.execute("UPDATE entries SET project = ? WHERE owner = ? AND project = ?",
+                                     (new, clean_owner(owner), old))
+        if cur.rowcount == 0:
+            raise KeyError(old)
+        return cur.rowcount
+
     def list_entries(
         self,
         *,

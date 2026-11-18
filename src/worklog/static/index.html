@@ -54,9 +54,18 @@
       <input id="f-until" type="date" data-ta="to">
     </span>
     <button type="button" id="f-reset" class="link" data-t="reset" hidden></button>
+    <button type="button" id="f-rename" class="link" data-t="renameProject" hidden></button>
   </section>
 
-  <p id="status" class="muted small" role="status"></p>
+  <div class="status-row">
+    <p id="status" class="muted small" role="status"></p>
+    <span id="export" class="export small" hidden>
+      <span class="muted" data-t="export"></span>
+      <a id="export-md" download>Markdown</a>
+      <a id="export-csv" download>CSV</a>
+    </span>
+  </div>
+  <datalist id="project-names"></datalist>
 
   <main id="view-entries">
     <div id="entries"></div>

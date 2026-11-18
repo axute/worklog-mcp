@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -16,7 +16,7 @@ from .api import register_api
 from .auth import WorklogTokenVerifier, current_agent
 from .config import Settings
 from .db import SUMMARY_MAX, Database, as_dict
-from .report import group_by_day_and_project
+from .report import group_by_day_and_project, period_bounds
 from .webui import register_webui
 
 INSTRUCTIONS = """\
@@ -55,6 +55,28 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         )
         log.info("entry_created", extra={"entry_id": entry.id, "agent": agent, "source": "tool"})
         return {"id": entry.id, "ts": entry.ts.astimezone(tz).isoformat()}
+
+    @mcp.tool(annotations={"title": "Correct a work entry", "destructiveHint": False, "idempotentHint": True})
+    def update_entry(
+        entry_id: Annotated[int, Field(description="Id of the entry, as returned by log_entry or list_entries.")],
+        project: Annotated[str | None, Field(description="New project name.")] = None,
+        summary: Annotated[str | None, Field(description=f"New summary, max. {SUMMARY_MAX} characters.")] = None,
+        details: Annotated[str | None, Field(description="New details (replaces the old text).")] = None,
+        tags: Annotated[list[str] | None, Field(description="New tags (replace the old ones).")] = None,
+        duration_min: Annotated[int | None, Field(description="New duration in minutes.", ge=0)] = None,
+    ) -> dict[str, Any]:
+        """Correct an entry this agent logged earlier, e.g. a wrong project name or a typo.
+        Only the given fields change. Entries of other agents cannot be changed; to remove
+        an entry, the user deletes it in the web view."""
+        owner, agent = current_agent("write")
+        changes = {k: v for k, v in (("project", project), ("summary", summary), ("details", details),
+                                     ("tags", tags), ("duration_min", duration_min)) if v is not None}
+        try:
+            entry = db.update_entry(owner=owner, entry_id=entry_id, agent=agent, **changes)
+        except KeyError:
+            raise ValueError(f"no entry {entry_id} written by '{agent}'") from None
+        log.info("entry_updated", extra={"entry_id": entry.id, "agent": agent, "source": "tool"})
+        return as_dict(entry, tz)
 
     @mcp.tool(annotations={"title": "List work entries", "readOnlyHint": True})
     def list_entries(
@@ -104,6 +126,42 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         Use the exact project names from here when logging, so entries end up in the same project."""
         owner, _ = current_agent("read")
         return [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()} for p in db.list_projects(owner=owner)]
+
+    # ------------------------------------------------------------------ prompts
+
+    def report_prompt(kind: str, ago: int, project: str | None, language: str | None) -> str:
+        start, end, label = period_bounds(kind, tz, ago=ago)
+        scope = f" for the project '{project}'" if project else ""
+        only = f", project='{project}'" if project else ""
+        return (
+            f"Write a {'weekly' if kind == 'week' else 'monthly'} work report for {label}{scope} "
+            f"({start:%Y-%m-%d} to {(end - timedelta(days=1)):%Y-%m-%d}).\n\n"
+            f"1. Call the worklog tool summarize_period with since='{start:%Y-%m-%d}', "
+            f"until='{end:%Y-%m-%d}'{only}.\n"
+            "2. Write the report from that data only; do not add anything that is not in the log:\n"
+            "   - a short overview: total time, number of entries, the main topics;\n"
+            "   - per project (largest first): logged time and a few bullet points with the results, "
+            "similar entries merged into one point;\n"
+            "   - decisions and open points, if the entries mention any.\n"
+            "Keep it short and concrete. If there are no entries, say so in one sentence.\n"
+            f"Language: {language or 'the language the user writes in'}."
+        )
+
+    @mcp.prompt(name="weekly_report", description="Report of a calendar week (Monday to Sunday) from the work log.")
+    def weekly_report(
+        weeks_ago: Annotated[int, Field(description="0 = this week, 1 = last week (default), 2 = the week before, ...", ge=0)] = 1,
+        project: Annotated[str | None, Field(description="Only this project.")] = None,
+        language: Annotated[str | None, Field(description="Language of the report, e.g. 'German'.")] = None,
+    ) -> str:
+        return report_prompt("week", weeks_ago, project, language)
+
+    @mcp.prompt(name="monthly_report", description="Report of a calendar month from the work log.")
+    def monthly_report(
+        months_ago: Annotated[int, Field(description="0 = this month, 1 = last month (default), ...", ge=0)] = 1,
+        project: Annotated[str | None, Field(description="Only this project.")] = None,
+        language: Annotated[str | None, Field(description="Language of the report, e.g. 'German'.")] = None,
+    ) -> str:
+        return report_prompt("month", months_ago, project, language)
 
     register_api(mcp, db, settings)
     register_webui(mcp, db, settings)

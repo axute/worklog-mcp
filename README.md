@@ -251,6 +251,7 @@ docker exec worklog-mcp worklog export --owner alice --since 2026-01-01 | tail
 | Tool | Parameters | Returns |
 |---|---|---|
 | `log_entry` | `project`, `summary` (max. 300 chars), optional `details`, `tags`, `duration_min`, `session_id` | id and timestamp |
+| `update_entry` | `entry_id`, and any of `project`, `summary`, `details`, `tags`, `duration_min` | the corrected entry; only entries of the same agent (token) |
 | `list_entries` | optional `project`, `agent`, `since`, `until`, `limit` (default 20, max. 500) | entries, newest first |
 | `search_entries` | `query`, optional `project`, `limit` | full text matches (summary, details, project, tags), best first; every word must match, word beginnings are enough |
 | `summarize_period` | `since`, `until`, optional `project` | entries grouped by day and project with durations and totals, e.g. for weekly reports |
@@ -258,7 +259,14 @@ docker exec worklog-mcp worklog export --owner alice --since 2026-01-01 | tail
 
 Dates without a time zone (`2026-11-13`) are read in the server's time zone.
 
-Scopes: `write` is needed for `log_entry`, `read` for all other tools.
+Scopes: `write` is needed for `log_entry` and `update_entry`, `read` for all other tools.
+
+**Prompts** (shown as ready-made commands in Claude Desktop, Claude Code and other clients):
+
+| Prompt | Arguments | Does |
+|---|---|---|
+| `weekly_report` | `weeks_ago` (0 = this week, default 1 = last week), optional `project`, `language` | asks the model to call `summarize_period` for that calendar week (Monday to Sunday) and write a short report from it |
+| `monthly_report` | `months_ago` (default 1), optional `project`, `language` | the same for a calendar month |
 
 ## Web view
 
@@ -266,7 +274,9 @@ Scopes: `write` is needed for `log_entry`, `read` for all other tools.
 
 - **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
 - **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
-- **Tokens** (only after signing in through the proxy, see below): create your tokens, see when each was last used, revoke them. A new token is shown once.
+- **Export:** the current filter as Markdown or CSV download (links above the list).
+- **Corrections** (only after signing in through the proxy, see below): edit or delete an entry (open it, then *Edit* / *Delete*); with a project filter set, *Rename project …* renames it, or merges it into an existing project.
+- **Tokens** (only after signing in through the proxy): create your tokens, see when each was last used, revoke them. A new token is shown once.
 
 The page loads nothing from other hosts and follows the light or dark theme and the language (English or German) of the browser.
 
@@ -348,6 +358,13 @@ Tokens look like `wl_…` (32 random bytes). Store them in a password manager or
 worklog export --owner alice --since 2026-11-09 --until 2026-11-16   # Markdown, grouped by day and project
 worklog export --owner alice --format csv --project website -o website.csv
 worklog backup --keep 14   # consistent copy to backups/ next to the database, keeps the newest 14
+```
+
+**Weekly report:** `worklog report --owner alice --period last-week` prints the Markdown report of the last calendar week (`this-week`, `last-month`, `this-month` also work). With `--dir DIR` it writes `worklog-alice-2026-W46.md` there instead and prints one line for a notification, e.g. `2026-W46: 42 entries, 31.5 h, 7 projects (top: website, heimnetz, unraid)`. Run it every Monday morning, e.g. via cron or the Unraid User Scripts plugin:
+
+```bash
+line=$(docker exec worklog-mcp worklog report --owner alice --period last-week --dir /backups/reports) \
+  && /usr/local/emhttp/webGui/scripts/notify -e worklog -s "Worklog: last week" -d "$line"
 ```
 
 ## Importing earlier sessions
