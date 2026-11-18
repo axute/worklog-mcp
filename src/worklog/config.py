@@ -22,6 +22,9 @@ class Settings:
     logout_url: str = ""
     # owner for entries and tokens from before multi-user support (needed once, for the migration)
     legacy_owner: str = ""
+    # stdio transport (the client starts the server itself): no token, so user and agent come from here
+    stdio_owner: str = ""
+    stdio_agent: str = "stdio"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -36,4 +39,6 @@ class Settings:
             web_users=frozenset(u.strip() for u in users.split(",") if u.strip()),
             logout_url=os.environ.get("WORKLOG_LOGOUT_URL", "").strip(),
             legacy_owner=os.environ.get("WORKLOG_LEGACY_OWNER", "").strip(),
+            stdio_owner=os.environ.get("WORKLOG_OWNER", "").strip(),
+            stdio_agent=os.environ.get("WORKLOG_AGENT", "").strip() or "stdio",
         )

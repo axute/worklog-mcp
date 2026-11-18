@@ -124,9 +124,25 @@ class WorklogTokenVerifier(TokenVerifier):
         return check_token(self._db, token)
 
 
+# stdio transport: the local client starts the server, there is no token; the
+# identity comes from the configuration. Never set in HTTP mode.
+_local_identity: tuple[str, str] | None = None
+
+
+def set_local_identity(owner: str, agent: str) -> None:
+    global _local_identity
+    if not NAME_RE.fullmatch(agent):
+        raise ValueError("WORKLOG_AGENT: 1-64 characters, letters, digits, '-', '_' or '.'")
+    from .db import clean_owner
+    _local_identity = (clean_owner(owner), agent)
+
+
 def current_agent(required_scope: str) -> tuple[str, str]:
-    """(owner, agent name) of the authenticated token for the running tool call; checks the scope."""
+    """(owner, agent name) of the authenticated token for the running tool call; checks the scope.
+    Over stdio it is the configured local identity, with all scopes."""
     token = get_access_token()
+    if token is None and _local_identity is not None:
+        return _local_identity
     if token is None:
         raise AuthError("not authenticated")
     if required_scope not in token.scopes:

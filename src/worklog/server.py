@@ -143,8 +143,8 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data, ensure_ascii=False)
 
 
-def setup_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
+def setup_logging(stream=None) -> None:
+    handler = logging.StreamHandler(stream or sys.stdout)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
     root.handlers[:] = [handler]
@@ -164,7 +164,18 @@ def create_app(settings: Settings | None = None, db: Database | None = None):
     return mcp.http_app(path="/mcp", stateless_http=True)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="worklog-server", description="worklog MCP server")
+    parser.add_argument("--stdio", action="store_true",
+                        help="talk MCP over stdin/stdout (the client starts the server, e.g. with docker run -i); "
+                             "user and agent come from WORKLOG_OWNER and WORKLOG_AGENT")
+    args = parser.parse_args(argv)
+    if args.stdio:
+        run_stdio()
+        return
+
     import uvicorn
 
     setup_logging()
@@ -173,6 +184,24 @@ def main() -> None:
     log.info("starting", extra={"path": "/mcp"})
     # access log off: request lines would only add noise; errors are still logged
     uvicorn.run(app, host=settings.host, port=settings.port, log_config=None, access_log=False)
+
+
+def run_stdio() -> None:
+    """stdio transport: stdout belongs to the protocol, so logs go to stderr."""
+    from .auth import set_local_identity
+
+    setup_logging(sys.stderr)
+    settings = Settings.from_env()
+    if not settings.stdio_owner:
+        sys.exit("worklog-server --stdio: set WORKLOG_OWNER (your user name) and optionally WORKLOG_AGENT")
+    try:
+        set_local_identity(settings.stdio_owner, settings.stdio_agent)
+    except ValueError as e:
+        sys.exit(f"worklog-server --stdio: {e}")
+    db = Database(settings.db_path, legacy_owner=settings.legacy_owner)
+    mcp = create_server(db, settings)
+    log.info("starting", extra={"path": "stdio", "agent": settings.stdio_agent})
+    mcp.run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

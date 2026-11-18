@@ -2,7 +2,7 @@
 
 An MCP server that collects work log entries from AI agents (Claude Code, Docker Agent, claude.ai and other MCP clients) and makes them searchable again.
 
-- One endpoint, Streamable HTTP, stateless: `https://<your-host>/mcp`
+- One endpoint, Streamable HTTP, stateless: `https://<your-host>/mcp`; or stdio, started by the client itself (`docker run -i …`)
 - One bearer token per agent; the server takes the agent name from the token, so entries cannot be written under another name
 - SQLite storage (WAL), tokens stored only as SHA-256 hashes
 - Times stored in UTC, shown in the configured time zone
@@ -45,6 +45,40 @@ claude mcp list                                                   # worklog … 
 ```
 
 In a new Claude Code session, ask for example *"Log to worklog: project test, summary 'worklog is running'"*. The entry shows up in the web view at <http://127.0.0.1:8000/ui/> (sign in there with a token that has the `read` scope; `laptop` has it), or with `worklog export --owner me`. To make agents log on their own, add the [agent rule](integrations/agent-rule.md) to `~/.claude/CLAUDE.md`.
+
+### Let the client start it (stdio, `docker run -i`)
+
+Instead of a server that runs all the time, the MCP client can start worklog itself for each session and talk to it over stdin/stdout. There is no token then: user and agent name come from `WORKLOG_OWNER` and `WORKLOG_AGENT` in the client configuration, and only programs on this machine can reach it.
+
+**Claude Desktop** (`claude_desktop_config.json`), and the same block in other clients with an `mcpServers` file (Cursor, Windsurf, …):
+
+```json
+{
+  "mcpServers": {
+    "worklog": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm",
+               "-v", "worklog-data:/data",
+               "-e", "WORKLOG_OWNER=me", "-e", "WORKLOG_AGENT=claude-desktop",
+               "ghcr.io/axute/worklog-mcp:latest", "worklog-server", "--stdio"]
+    }
+  }
+}
+```
+
+**Claude Code:**
+
+```bash
+claude mcp add --scope user worklog -- docker run -i --rm -v worklog-data:/data \
+  -e WORKLOG_OWNER=me -e WORKLOG_AGENT=claude-code ghcr.io/axute/worklog-mcp:latest worklog-server --stdio
+```
+
+**Without Docker**, after the `pip install` above: `"command": "worklog-server", "args": ["--stdio"]` with `"env": {"WORKLOG_OWNER": "me", "WORKLOG_AGENT": "claude-desktop", "WORKLOG_DB": "/home/me/worklog/worklog.db"}`.
+
+- `-i` is required (stdin stays open), `--rm` removes the container when the session ends; don't add `-t`.
+- `worklog-data` is a named Docker volume, created on first use. Prefer it over a bind mount on Docker Desktop (Mac, Windows), where SQLite file locks on host folders are unreliable.
+- Several clients may run at the same time on the same volume, and an HTTP server (above, with `-v worklog-data:/data` instead of `~/worklog-data`) can share it too, so its web view shows the stdio entries. Use one agent name per client.
+- Docker pulls the image at the first start, which can take a moment; pin a version tag once you rely on it. Logs go to stderr, so the client's MCP log shows them.
 
 ## Setup guide
 
@@ -355,9 +389,11 @@ python -m worklog_import upload            # --update overwrites already importe
 | `WORKLOG_USER_HEADER` | `Remote-User` | header with the user name set by the proxy |
 | `WORKLOG_WEB_USERS` | – | optional comma-separated list of users allowed in; empty: everyone the proxy lets through |
 | `WORKLOG_LEGACY_OWNER` | – | user who gets entries and tokens from before multi-user support; needed once, for the upgrade |
+| `WORKLOG_OWNER` | – | stdio only: the user whose log this is (required with `--stdio`) |
+| `WORKLOG_AGENT` | `stdio` | stdio only: agent name for entries (letters, digits, `-`, `_`, `.`) |
 | `WORKLOG_LOGOUT_URL` | – | sign-out link shown to proxy users, e.g. `https://auth.example.com/logout` |
 
-Run: `worklog-server` (or `python -m worklog.server`). `GET /healthz` answers `ok` without a token (for health checks); everything under `/mcp` needs `Authorization: Bearer <token>`.
+Run: `worklog-server` (or `python -m worklog.server`) for HTTP, `worklog-server --stdio` for stdio. `GET /healthz` answers `ok` without a token (for health checks); everything under `/mcp` needs `Authorization: Bearer <token>`.
 
 ## Development
 
