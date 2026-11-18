@@ -250,7 +250,7 @@ docker exec worklog-mcp worklog export --owner alice --since 2026-01-01 | tail
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `log_entry` | `project`, `summary` (max. 300 chars), optional `details`, `tags`, `duration_min`, `session_id` | id and timestamp |
+| `log_entry` | `project`, `summary` (max. 300 chars), optional `details`, `tags`, `duration_min`, `session_id` | id and timestamp; `possible_duplicate_of` with a hint if a very similar entry was logged shortly before |
 | `update_entry` | `entry_id`, and any of `project`, `summary`, `details`, `tags`, `duration_min` | the corrected entry; only entries of the same agent (token) |
 | `list_entries` | optional `project`, `agent`, `since`, `until`, `limit` (default 20, max. 500) | entries, newest first |
 | `search_entries` | `query`, optional `project`, `limit` | full text matches (summary, details, project, tags), best first; every word must match, word beginnings are enough |
@@ -275,6 +275,7 @@ Scopes: `write` is needed for `log_entry` and `update_entry`, `read` for all oth
 - **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
 - **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
 - **Export:** the current filter as Markdown or CSV download (links above the list).
+- **Duplicates:** entries that look like the same work logged twice (same project, at most 3 hours apart, nearly the same summary; summaries with different numbers never count) are shown above the list. Pick the one to keep and merge: details and tags are combined, the longest duration counts once, the earliest time stays, the others are deleted. *Not a duplicate* hides the group for good. Merging needs the proxy sign-in.
 - **Corrections** (only after signing in through the proxy, see below): edit or delete an entry (open it, then *Edit* / *Delete*); with a project filter set, *Rename project …* renames it, or merges it into an existing project.
 - **Tokens** (only after signing in through the proxy): create your tokens, see when each was last used, revoke them. A new token is shown once.
 

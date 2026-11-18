@@ -83,6 +83,16 @@ MIGRATIONS: list[str] = [
     """,
     # 4: owners (multi-user); existing rows go to the legacy owner (see _migrate_owners)
     "_migrate_owners",
+    # 5: pairs of entries a user marked as "not a duplicate" (a < b)
+    """
+    CREATE TABLE duplicate_ignores (
+        owner      TEXT NOT NULL,
+        a          INTEGER NOT NULL,
+        b          INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (owner, a, b)
+    );
+    """,
 ]
 
 OWNER_SCHEMA = """
@@ -421,6 +431,68 @@ class Database:
                                      (clean_owner(owner), int(entry_id)))
         if cur.rowcount == 0:
             raise KeyError(entry_id)
+
+    def merge_entries(self, *, owner: str, keep_id: int, remove_ids: list[int]) -> Entry:
+        """Merge duplicates into `keep_id` and delete the others: earliest time, details and tags
+        combined, the longest duration (the same work must not count twice), an import id kept."""
+        owner = clean_owner(owner)
+        remove = sorted({int(i) for i in remove_ids} - {int(keep_id)})
+        if not remove:
+            raise ValueError("nothing to merge")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = {r["id"]: Entry.from_row(r) for r in self._conn.execute(
+                    f"SELECT * FROM entries WHERE owner = ? AND id IN ({','.join('?' * (len(remove) + 1))})",
+                    (owner, int(keep_id), *remove)).fetchall()}
+                missing = [i for i in [int(keep_id), *remove] if i not in rows]
+                if missing:
+                    raise KeyError(missing[0])
+                keep, others = rows[int(keep_id)], [rows[i] for i in remove]
+                details = [keep.details] if keep.details else []
+                for o in others:
+                    if o.details and all(o.details not in d for d in details):
+                        details.append(o.details)
+                tags = list(keep.tags)
+                for o in others:
+                    tags += [t for t in o.tags if t not in tags]
+                durations = [e.duration_min for e in [keep, *others] if e.duration_min is not None]
+                external = keep.external_id or next((o.external_id for o in others if o.external_id), None)
+                self._conn.execute(f"DELETE FROM entries WHERE owner = ? AND id IN ({','.join('?' * len(remove))})",
+                                   (owner, *remove))
+                self._conn.execute(
+                    "UPDATE entries SET ts = ?, details = ?, tags = ?, duration_min = ?, external_id = ? WHERE id = ?",
+                    (to_db_ts(min(e.ts for e in [keep, *others])), "\n\n".join(details) or None,
+                     json.dumps(tags, ensure_ascii=False) if tags else None,
+                     max(durations) if durations else None, external, keep.id))
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return self.get_own_entry(owner=owner, entry_id=keep.id)
+
+    def ignore_duplicates(self, *, owner: str, ids: list[int]) -> None:
+        """Mark every pair among `ids` as "not a duplicate"."""
+        owner = clean_owner(owner)
+        ids = sorted({int(i) for i in ids})
+        if len(ids) < 2:
+            raise ValueError("need at least two entries")
+        with self._lock:
+            found = self._conn.execute(
+                f"SELECT COUNT(*) FROM entries WHERE owner = ? AND id IN ({','.join('?' * len(ids))})",
+                (owner, *ids)).fetchone()[0]
+            if found != len(ids):
+                raise KeyError(ids)
+            now = to_db_ts(utcnow())
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO duplicate_ignores (owner, a, b, created_at) VALUES (?, ?, ?, ?)",
+                [(owner, a, b, now) for i, a in enumerate(ids) for b in ids[i + 1:]])
+
+    def ignored_duplicates(self, *, owner: str) -> set[tuple[int, int]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT a, b FROM duplicate_ignores WHERE owner = ?",
+                                      (clean_owner(owner),)).fetchall()
+        return {(r["a"], r["b"]) for r in rows}
 
     def rename_project(self, *, owner: str, old: str, new: str) -> int:
         """Move all entries of project `old` to `new` (renames, or merges into an existing project).

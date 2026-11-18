@@ -10,6 +10,9 @@
     POST /ui/api/entries/{id}       change an own entry: project, summary, details, tags, duration_min (proxy sign-in)
     POST /ui/api/entries/{id}/delete                                              (proxy sign-in)
     POST /ui/api/projects/rename    {"from", "to"}: rename, or merge into an existing project (proxy sign-in)
+    GET  /ui/api/duplicates         groups of entries that were probably logged twice
+    POST /ui/api/duplicates/merge   {"keep": id, "remove": [ids]}                 (proxy sign-in)
+    POST /ui/api/duplicates/ignore  {"ids": [ids]}: "not a duplicate", never shown again (proxy sign-in)
     GET  /ui/api/export             same filters as /ui/api/entries, format=md|csv -> file download
     GET  /ui/api/tokens             own tokens (proxy sign-in)
     POST /ui/api/tokens             {"name", "scopes"} -> new own token, shown once (proxy sign-in)
@@ -49,6 +52,7 @@ from .auth import (NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_to
                    owner_of)
 from .config import Settings
 from .db import SCOPES, Database, as_dict
+from .dupes import find_groups
 from .report import stats, to_csv, to_markdown
 
 log = logging.getLogger("worklog.webui")
@@ -300,6 +304,51 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return _json({"error": "unknown entry"}, 404)
         log.info("entry_deleted", extra={"entry_id": entry_id, "by": who.owner, "source": "web"})
         return _json({"deleted": entry_id})
+
+    @mcp.custom_route("/ui/api/duplicates", methods=["GET"], include_in_schema=False)
+    async def duplicates(request: Request) -> Response:
+        who, err = viewer(request)
+        if err:
+            return err
+        entries, _ = db.query_entries(owner=who.owner, limit=None)
+        groups = find_groups(entries, db.ignored_duplicates(owner=who.owner))
+        return _json({"groups": [{"score": g["score"], "entries": [as_dict(e, tz) for e in g["entries"]]}
+                                 for g in groups]})
+
+    @mcp.custom_route("/ui/api/duplicates/merge", methods=["POST"], include_in_schema=False)
+    async def merge_duplicates(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        try:
+            body = await json_object(request)
+            keep, remove = body.get("keep"), body.get("remove")
+            if not isinstance(keep, int) or not isinstance(remove, list) or not all(isinstance(i, int) for i in remove):
+                raise ValueError("expected {\"keep\": id, \"remove\": [ids]}")
+            entry = db.merge_entries(owner=who.owner, keep_id=keep, remove_ids=remove)
+        except KeyError:
+            return _json({"error": "unknown entry"}, 404)
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        log.info("entries_merged", extra={"entry_id": entry.id, "by": who.owner, "status": {"removed": len(remove)}})
+        return _json(as_dict(entry, tz))
+
+    @mcp.custom_route("/ui/api/duplicates/ignore", methods=["POST"], include_in_schema=False)
+    async def ignore_duplicates(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        try:
+            body = await json_object(request)
+            ids = body.get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+                raise ValueError("expected {\"ids\": [ids]}")
+            db.ignore_duplicates(owner=who.owner, ids=ids)
+        except KeyError:
+            return _json({"error": "unknown entry"}, 404)
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        return _json({"ignored": sorted(set(ids))})
 
     @mcp.custom_route("/ui/api/projects/rename", methods=["POST"], include_in_schema=False)
     async def rename_project(request: Request) -> Response:

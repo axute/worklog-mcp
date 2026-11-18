@@ -25,6 +25,10 @@ const TEXT = {
     revokeConfirm: 'Revoke the token "{0}"? Agents using it lose access immediately. The name cannot be reused.',
     colName: 'Name', colScopes: 'Rights', colCreated: 'Created', colUsed: 'Last used', colState: 'Status',
     active: 'active', revokedAt: 'revoked {0}', never: 'never', pickScope: 'Choose at least one right.',
+    dupesFound: '{0} possible duplicates: the same work seems to be logged more than once.',
+    oneDupe: '1 possible duplicate: the same work seems to be logged more than once.',
+    showDupes: 'Review', hideDupes: 'Hide', similar: 'similar ({0} %)', keepThis: 'Keep the selected one and merge',
+    notDupe: 'Not a duplicate', mergeHelp: 'Details and tags are combined, the longest duration counts once, the others are deleted.',
     edit: 'Edit', del: 'Delete', save: 'Save', cancel: 'Cancel', summaryLbl: 'Summary', detailsLbl: 'Details',
     tagsLbl: 'Tags (comma separated)', minutesLbl: 'Minutes', deleteConfirm: 'Delete this entry? This cannot be undone.',
     renameProject: 'Rename project …', renamePrompt: 'New name for the project "{0}":',
@@ -51,6 +55,11 @@ const TEXT = {
     revokeConfirm: 'Token „{0}“ widerrufen? Agents, die es nutzen, verlieren sofort den Zugriff. Der Name ist danach nicht wieder verwendbar.',
     colName: 'Name', colScopes: 'Rechte', colCreated: 'Angelegt', colUsed: 'Zuletzt benutzt', colState: 'Status',
     active: 'aktiv', revokedAt: 'widerrufen {0}', never: 'nie', pickScope: 'Wähle mindestens ein Recht.',
+    dupesFound: '{0} mögliche Duplikate: Dieselbe Arbeit scheint mehrfach eingetragen zu sein.',
+    oneDupe: '1 mögliches Duplikat: Dieselbe Arbeit scheint mehrfach eingetragen zu sein.',
+    showDupes: 'Ansehen', hideDupes: 'Ausblenden', similar: 'ähnlich ({0} %)',
+    keepThis: 'Ausgewählten behalten und zusammenführen', notDupe: 'Kein Duplikat',
+    mergeHelp: 'Details und Tags werden zusammengelegt, die längste Dauer zählt einmal, die anderen werden gelöscht.',
     edit: 'Bearbeiten', del: 'Löschen', save: 'Speichern', cancel: 'Abbrechen', summaryLbl: 'Zusammenfassung',
     detailsLbl: 'Details', tagsLbl: 'Tags (durch Komma getrennt)', minutesLbl: 'Minuten',
     deleteConfirm: 'Diesen Eintrag löschen? Das lässt sich nicht rückgängig machen.',
@@ -111,6 +120,8 @@ let overview = null;     // last stats answer
 let allProjects = false;
 let me = null;           // { user, agent, via, manage_tokens, can_edit, logout_url }
 let facets = null;       // last /api/facets answer
+let dupes = [];          // groups of likely duplicates
+let dupesOpen = false;
 const TABS = () => (me && me.manage_tokens ? ['entries', 'overview', 'tokens'] : ['entries', 'overview']);
 
 function readHash() {
@@ -332,6 +343,74 @@ function entryRow(e) {
   return d;
 }
 
+// ---------------------------------------------------------------- duplicates
+
+async function loadDupes() {
+  try {
+    dupes = (await api('api/duplicates')).groups;
+  } catch (e) {
+    dupes = [];
+  }
+  renderDupes();
+}
+function renderDupes() {
+  $('dupes-hint').hidden = !dupes.length;
+  if (!dupes.length) dupesOpen = false;
+  $('dupes-text').textContent = dupes.length === 1 ? t('oneDupe') : t('dupesFound', num(dupes.length));
+  $('dupes-toggle').textContent = t(dupesOpen ? 'hideDupes' : 'showDupes');
+  const box = $('dupes');
+  box.hidden = !dupesOpen;
+  box.textContent = '';
+  if (!dupesOpen) return;
+  dupes.forEach((g, gi) => {
+    const card = el('div', 'dupe');
+    const head = el('div', 'dupe-head');
+    head.append(el('span', null, g.entries[0].project), el('span', null, t('similar', Math.round(g.score * 100))));
+    card.append(head);
+    // default: keep the entry with the most details
+    const best = g.entries.reduce((a, b) => ((b.details || '').length > (a.details || '').length ? b : a));
+    for (const e of g.entries) {
+      const label = el('label');
+      const radio = el('input');
+      radio.type = 'radio';
+      radio.name = `keep-${gi}`;
+      radio.value = e.id;
+      radio.checked = e.id === best.id;
+      radio.disabled = !(me && me.can_edit);
+      label.append(radio, el('span', null, e.summary),
+        el('span', 'meta', `${e.ts.slice(0, 10)} ${e.ts.slice(11, 16)} · ${e.agent} · ${fmtDur(e.duration_min) || '–'} · #${e.id}`));
+      if (e.details) label.append(el('span', 'snippet', e.details));
+      card.append(label);
+    }
+    if (me && me.can_edit) {
+      const buttons = el('div', 'buttons');
+      const merge = el('button', 'primary', t('keepThis'));
+      merge.type = 'button';
+      merge.addEventListener('click', async () => {
+        const keep = Number(card.querySelector('input:checked').value);
+        await dupeAction('api/duplicates/merge', { keep, remove: g.entries.map((e) => e.id).filter((id) => id !== keep) });
+      });
+      const ignore = el('button', 'link', t('notDupe'));
+      ignore.type = 'button';
+      ignore.addEventListener('click', () => dupeAction('api/duplicates/ignore', { ids: g.entries.map((e) => e.id) }));
+      buttons.append(merge, ignore);
+      card.append(buttons, el('p', 'muted small', t('mergeHelp')));
+    }
+    box.append(card);
+  });
+}
+async function dupeAction(path, body) {
+  try {
+    await apiPost(path, body);
+  } catch (err) {
+    if (err.message !== '401') alert(t('error', err.message));
+    return;
+  }
+  await loadDupes();
+  loadFacets();
+  refresh();
+}
+
 // ---------------------------------------------------------------- changes (proxy sign-in)
 
 function field(label, input, wide) {
@@ -369,6 +448,7 @@ function entryForm(e, details) {
       row.open = true;
       details.replaceWith(row);
       loadFacets();
+      loadDupes();
     } catch (err) {
       if (err.message !== '401') error.textContent = err.message;
     }
@@ -384,6 +464,7 @@ async function deleteEntry(e) {
     total -= 1;
     renderEntries();
     loadFacets();
+    loadDupes();
   } catch (err) {
     if (err.message !== '401') alert(t('error', err.message));
   }
@@ -673,6 +754,7 @@ async function start(session) {
   try { await loadFacets(); } catch (e) { if (e.message === '401') return; }
   syncControls();
   refresh();
+  loadDupes();
 }
 async function loadFacets() {
   const f = await api('api/facets');
@@ -725,6 +807,7 @@ function init() {
 
   $('token-form').addEventListener('submit', onCreateToken);
   $('f-rename').addEventListener('click', renameProject);
+  $('dupes-toggle').addEventListener('click', () => { dupesOpen = !dupesOpen; renderDupes(); });
   $('token-copy').addEventListener('click', copyToken);
   $('token-done').addEventListener('click', hideNewToken);
   loadSession();

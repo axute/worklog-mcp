@@ -16,6 +16,7 @@ from .api import register_api
 from .auth import WorklogTokenVerifier, current_agent
 from .config import Settings
 from .db import SUMMARY_MAX, Database, as_dict
+from .dupes import WINDOW_HOURS, likely_same
 from .report import group_by_day_and_project, period_bounds
 from .webui import register_webui
 
@@ -54,7 +55,18 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
             tags=tags, duration_min=duration_min, session_id=session_id,
         )
         log.info("entry_created", extra={"entry_id": entry.id, "agent": agent, "source": "tool"})
-        return {"id": entry.id, "ts": entry.ts.astimezone(tz).isoformat()}
+        result: dict[str, Any] = {"id": entry.id, "ts": entry.ts.astimezone(tz).isoformat()}
+        # same work logged twice? tell the agent, so it corrects instead of adding more
+        window = timedelta(hours=WINDOW_HOURS)
+        near = db.list_entries(owner=owner, project=entry.project, since=entry.ts - window,
+                               until=entry.ts + timedelta(seconds=1), limit=50)
+        twins = [e.id for e in near if e.id != entry.id and likely_same(e, entry)]
+        if twins:
+            result["possible_duplicate_of"] = twins
+            result["hint"] = ("A very similar entry was logged recently (possible_duplicate_of). If it is the "
+                              "same work, don't log it again: correct the existing entry with update_entry. "
+                              "The user can merge duplicates in the web view.")
+        return result
 
     @mcp.tool(annotations={"title": "Correct a work entry", "destructiveHint": False, "idempotentHint": True})
     def update_entry(
