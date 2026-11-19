@@ -98,7 +98,8 @@ def create_session(db: Database, token: str | None) -> tuple[str | None, AccessT
 
 
 def check_session(db: Database, value: str | None) -> AccessToken | None:
-    """Session cookie -> AccessToken with read scope only; follows revocation of the token."""
+    """Session cookie -> AccessToken with the scopes of the token it was created with (read is
+    required); follows revocation and scope changes of the token."""
     parts = (value or "").split(".")
     if len(parts) != 4 or parts[0] != "v1" or not parts[1].isdigit() or not parts[2].isdigit():
         return None
@@ -110,7 +111,7 @@ def check_session(db: Database, value: str | None) -> AccessToken | None:
     record = db.get_token_by_id(int(parts[1]))
     if record is None or record.revoked_at or "read" not in record.scopes:
         return None
-    return _access(record, "session", ["read"])
+    return _access(record, "session", list(record.scopes))
 
 
 class WorklogTokenVerifier(TokenVerifier):

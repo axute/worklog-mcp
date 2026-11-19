@@ -7,19 +7,21 @@
     GET  /ui/api/entries            filtered list: q, project, agent, source, since, until, limit, offset
     GET  /ui/api/facets             projects, agents and sources with entry counts
     GET  /ui/api/stats              totals, per project and per day for the same filters
-    POST /ui/api/entries/{id}       change an own entry: project, summary, details, tags, duration_min (proxy sign-in)
-    POST /ui/api/entries/{id}/delete                                              (proxy sign-in)
-    POST /ui/api/projects/rename    {"from", "to"}: rename, or merge into an existing project (proxy sign-in)
+    POST /ui/api/entries/{id}       change an own entry: project, summary, details, tags, duration_min (write)
+    POST /ui/api/entries/{id}/delete                                              (write)
+    POST /ui/api/projects/rename    {"from", "to"}: rename, or merge into an existing project (write)
     GET  /ui/api/duplicates         groups of entries that were probably logged twice
-    POST /ui/api/duplicates/merge   {"keep": id, "remove": [ids]}                 (proxy sign-in)
-    POST /ui/api/duplicates/ignore  {"ids": [ids]}: "not a duplicate", never shown again (proxy sign-in)
+    POST /ui/api/duplicates/merge   {"keep": id, "remove": [ids]}                 (write)
+    POST /ui/api/duplicates/ignore  {"ids": [ids]}: "not a duplicate", never shown again (write)
     GET  /ui/api/export             same filters as /ui/api/entries, format=md|csv|json -> file download
-    POST /ui/api/import             a JSON export (owner = the signed-in user); ?update=true overwrites (proxy sign-in)
+    POST /ui/api/import             a JSON export (owner = the signed-in user); ?update=true overwrites (write)
     GET  /ui/api/tokens             own tokens (proxy sign-in)
     POST /ui/api/tokens             {"name", "scopes"} -> new own token, shown once (proxy sign-in)
     POST /ui/api/tokens/{name}/revoke  revoke an own token (proxy sign-in)
 
     GET  /api/entries, /api/facets, /api/stats   the same reads for scripts, bearer token only
+
+(write) = proxy sign-in, or a token sign-in whose token has the write scope.
 
 Every user sees only their own entries and tokens (strictly separated, no admin view).
 
@@ -29,9 +31,10 @@ Who may do what:
   user reads their entries and manages their tokens. Without the shared secret in
   X-Worklog-Proxy the header is ignored, so nobody can fake it by talking to the
   container directly.
-* Token sign-in: a signed session cookie (never the token itself), read only,
-  for the owner of the token.
-* Bearer token with scope read: read only, for the owner of the token.
+* Token sign-in: a signed session cookie (never the token itself) for the owner of
+  the token, with the token's rights: read only, or with the write scope also
+  corrections and imports. Token management stays with the proxy sign-in.
+* Bearer token with scope read: reads, for the owner of the token.
 Changes need a request from the page's own origin with a JSON body.
 """
 
@@ -82,7 +85,8 @@ class Viewer:
     owner: str          # whose data this request sees
     agent: str | None   # token name for session/bearer, None for proxy users
     via: str            # proxy | session | bearer
-    manage_tokens: bool
+    manage_tokens: bool  # only with proxy sign-in
+    can_edit: bool       # change entries, import: proxy sign-in, or a token with the write scope
 
 
 def _json(data, status: int = 200) -> JSONResponse:
@@ -139,20 +143,24 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         else:
             user = proxy_user(request) if allow_cookie else None
             if user:
-                return Viewer(user, None, "proxy", manage_tokens=True), None
+                return Viewer(user, None, "proxy", manage_tokens=True, can_edit=True), None
             access, via = (check_session(db, request.cookies.get(SESSION_COOKIE)) if allow_cookie else None), "session"
         if access is None:
             return None, _json({"error": "not signed in"}, 401)
         if "read" not in access.scopes:
             return None, _json({"error": "token lacks the 'read' scope"}, 403)
-        return Viewer(owner_of(access), access.client_id, via, manage_tokens=False), None
+        return Viewer(owner_of(access), access.client_id, via, manage_tokens=False,
+                      can_edit="write" in access.scopes), None
 
-    def manager(request: Request, change: bool) -> tuple[Viewer | None, JSONResponse | None]:
+    def manager(request: Request, change: bool, tokens: bool = False) -> tuple[Viewer | None, JSONResponse | None]:
+        """Changes: entries need can_edit (proxy sign-in or a write token), tokens need the proxy sign-in."""
         who, err = viewer(request)
         if err:
             return None, err
-        if not who.manage_tokens:
-            return None, _json({"error": "only users signed in through the proxy may change entries or tokens"}, 403)
+        if tokens and not who.manage_tokens:
+            return None, _json({"error": "only users signed in through the proxy may manage tokens"}, 403)
+        if not who.can_edit:
+            return None, _json({"error": "this sign-in is read only: use a token with the 'write' scope"}, 403)
         if change and not (_same_origin(request, required=True)
                            and request.headers.get("content-type", "").split(";")[0].strip() == "application/json"):
             return None, _json({"error": "cross-site request"}, 403)
@@ -203,7 +211,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         if err:
             return err
         return _json({"user": who.owner, "agent": who.agent, "via": who.via, "manage_tokens": who.manage_tokens,
-                      "can_edit": who.manage_tokens,
+                      "can_edit": who.can_edit,
                       "timezone": str(tz),
                       "logout_url": settings.logout_url if who.via == "proxy" else ""})
 
@@ -269,7 +277,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         return PlainTextResponse(body, media_type=media, headers={
             "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store", **SECURITY_HEADERS})
 
-    # ------------------------------------------------------------------ changes (proxy sign-in)
+    # ------------------------------------------------------------------ changes (write)
 
     async def json_object(request: Request) -> dict:
         body = json.loads(await request.body() or b"{}")
@@ -398,12 +406,12 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/ui/api/tokens", methods=["GET"], include_in_schema=False)
     async def list_tokens(request: Request) -> Response:
-        who, err = manager(request, change=False)
+        who, err = manager(request, change=False, tokens=True)
         return err or _json({"scopes": list(SCOPES), "tokens": [token_dict(r) for r in db.list_tokens(owner=who.owner)]})
 
     @mcp.custom_route("/ui/api/tokens", methods=["POST"], include_in_schema=False)
     async def new_token(request: Request) -> Response:
-        who, err = manager(request, change=True)
+        who, err = manager(request, change=True, tokens=True)
         if err:
             return err
         try:
@@ -422,7 +430,7 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
 
     @mcp.custom_route("/ui/api/tokens/{name}/revoke", methods=["POST"], include_in_schema=False)
     async def revoke_token(request: Request) -> Response:
-        who, err = manager(request, change=True)
+        who, err = manager(request, change=True, tokens=True)
         if err:
             return err
         name = request.path_params["name"]

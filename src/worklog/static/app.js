@@ -6,7 +6,7 @@
 
 const TEXT = {
   en: {
-    loginHint: 'You are not signed in through the single sign-on. Alternatively, sign in with a token that has the read scope (read only).', token: 'Token', signIn: 'Sign in', signOut: 'Sign out',
+    loginHint: 'You are not signed in through the single sign-on. Alternatively, sign in with a token: with the read scope to read, with read and write also to edit and import.', token: 'Token', signIn: 'Sign in', signOut: 'Sign out',
     badToken: 'This token is not valid.', noRead: 'This token has no read scope.', loginFailed: 'Sign-in failed.',
     entries: 'Entries', overview: 'Overview', search: 'Search …', project: 'Project', agent: 'Agent', source: 'Source',
     period: 'Period', from: 'From', to: 'To', reset: 'Reset filters',
@@ -38,7 +38,7 @@ const TEXT = {
     nameTaken: 'This name is already taken (also by revoked tokens).', badName: 'Name: 1–64 characters, letters, digits, - _ or .',
   },
   de: {
-    loginHint: 'Du bist nicht über das Single Sign-on angemeldet. Alternativ geht die Anmeldung mit einem Token, das das Recht „read“ hat (nur lesen).', token: 'Token', signIn: 'Anmelden', signOut: 'Abmelden',
+    loginHint: 'Du bist nicht über das Single Sign-on angemeldet. Alternativ geht die Anmeldung mit einem Token: mit dem Recht „read“ zum Lesen, mit „read“ und „write“ auch zum Bearbeiten und Importieren.', token: 'Token', signIn: 'Anmelden', signOut: 'Abmelden',
     badToken: 'Dieses Token ist nicht gültig.', noRead: 'Dieses Token hat kein Leserecht.', loginFailed: 'Anmeldung fehlgeschlagen.',
     entries: 'Einträge', overview: 'Übersicht', search: 'Suchen …', project: 'Projekt', agent: 'Agent', source: 'Quelle',
     period: 'Zeitraum', from: 'Von', to: 'Bis', reset: 'Filter zurücksetzen',

@@ -184,3 +184,24 @@ def test_report_command(tmp_path, capsys):
     assert text.startswith(f"# Work log {label}") and "garten" in text
     assert main(["--db", path, "report", "--owner", "alice", "--period", "this-month"]) == 0
     assert capsys.readouterr().out.startswith("# Work log")
+
+
+def test_token_sign_in_with_write_scope_may_edit(server, db):
+    """Token sign-in gets the token's rights: write allows corrections and imports, never token management."""
+    a = add(db)
+    add(db, owner="bob", summary="Bobs")
+    writer = create_token(db, "alice", "laptop", ["read", "write"])
+    with httpx.Client(base_url=server, headers={"Origin": server}) as c:
+        assert c.post("/ui/login", json={"token": writer}).status_code == 200
+        s = c.get("/ui/session").json()
+        assert (s["can_edit"], s["manage_tokens"]) == (True, False)
+        assert c.post(f"/ui/api/entries/{a.id}", json={"summary": "per Token korrigiert"}).status_code == 200
+        r = c.post("/ui/api/import", json=[{"ts": "2026-01-01T10:00:00Z", "project": "p", "summary": "importiert"}])
+        assert r.json()["created"] == 1
+        assert c.get("/ui/api/tokens").status_code == 403
+        assert c.post("/ui/api/tokens", json={"name": "x", "scopes": ["write"]}).status_code == 403
+        bobs = db.list_entries(owner="bob")[0].id
+        assert c.post(f"/ui/api/entries/{bobs}/delete", json={}).status_code == 404       # still only own entries
+        db.revoke_token("alice", "laptop")
+        assert c.post(f"/ui/api/entries/{a.id}", json={"summary": "x"}).status_code == 401  # follows revocation
+    assert db.get_own_entry(owner="alice", entry_id=a.id).summary == "per Token korrigiert"

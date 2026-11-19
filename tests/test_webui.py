@@ -72,7 +72,7 @@ def test_session_roundtrip_and_revocation(db, tokens):
     assert access.client_id == "claude-code-laptop"
     assert tokens["rw"] not in session  # the cookie never carries the token
     got = check_session(db, session)
-    assert got.client_id == "claude-code-laptop" and got.scopes == ["read"]
+    assert got.client_id == "claude-code-laptop" and sorted(got.scopes) == ["read", "write"]  # the token's rights
     assert check_session(db, session[:-1] + ("0" if session[-1] != "0" else "1")) is None  # tampered signature
     parts = session.split(".")
     assert check_session(db, ".".join([parts[0], "999", parts[2], parts[3]])) is None       # other token id

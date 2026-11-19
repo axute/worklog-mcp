@@ -280,9 +280,9 @@ Scopes: `write` is needed for `log_entry`, `log_entries` and `update_entry`, `re
 - **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
 - **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
 - **Export:** the current filter as Markdown, CSV or JSON download (links above the list).
-- **Import** (proxy sign-in): a JSON export, e.g. from another worklog instance, becomes part of your log. See [JSON export and import](#json-export-and-import).
-- **Duplicates:** entries that look like the same work logged twice (same project, at most 3 hours apart, nearly the same summary; summaries with different numbers never count) are shown above the list. Pick the one to keep and merge: details and tags are combined, the longest duration counts once, the earliest time stays, the others are deleted. *Not a duplicate* hides the group for good. Merging needs the proxy sign-in.
-- **Corrections** (only after signing in through the proxy, see below): edit or delete an entry (open it, then *Edit* / *Delete*); with a project filter set, *Rename project …* renames it, or merges it into an existing project.
+- **Import** (needs write rights, see below): a JSON export, e.g. from another worklog instance, becomes part of your log. See [JSON export and import](#json-export-and-import).
+- **Duplicates:** entries that look like the same work logged twice (same project, at most 3 hours apart, nearly the same summary; summaries with different numbers never count) are shown above the list. Pick the one to keep and merge: details and tags are combined, the longest duration counts once, the earliest time stays, the others are deleted. *Not a duplicate* hides the group for good. Both need write rights.
+- **Corrections** (need write rights): edit or delete an entry (open it, then *Edit* / *Delete*); with a project filter set, *Rename project …* renames it, or merges it into an existing project.
 - **Tokens** (only after signing in through the proxy): create your tokens, see when each was last used, revoke them. A new token is shown once.
 
 The page loads nothing from other hosts and follows the light or dark theme and the language (English or German) of the browser.
@@ -300,13 +300,16 @@ WORKLOG_PROXY_SECRET=$(openssl rand -base64 32)
 
 ### Signing in with a token
 
-Without a proxy login, sign in on the page with any token that has the `read` scope; a dedicated one is a good idea:
+Without a proxy login, sign in on the page with a token that has the `read` scope; a dedicated one is a good idea:
 
 ```bash
-docker exec -it worklog-mcp worklog token create web --owner <user> --scopes read
+docker exec -it worklog-mcp worklog token create web --owner <user> --scopes read         # look only
+docker exec -it worklog-mcp worklog token create web --owner <user> --scopes read,write   # also edit and import
 ```
 
-The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behind HTTPS, 30 days). It never contains the token, gives read access only (no token management) and stops working when the token is revoked.
+The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behind HTTPS, 30 days). It never contains the token and stops working when the token is revoked.
+
+**Rights in the web view:** signed in through the proxy, you may do everything with your own data. Signed in with a token, you get that token's rights: with `read` you can read and export; with `read` and `write` you can also edit, delete, rename, merge duplicates and import. Managing tokens always needs the proxy sign-in, so an agent's token cannot create more tokens. Changes are accepted only from the page itself (same origin, JSON body).
 
 ### JSON for scripts
 
