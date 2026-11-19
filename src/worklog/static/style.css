@@ -156,6 +156,18 @@ table.pr td.actions { text-align: right; white-space: nowrap; }
 .heat-legend { display: inline-flex; gap: .25rem; align-items: center; }
 .heat-legend svg { display: block; }
 
+/* settings */
+.sched-form { display: grid; gap: .6rem; }
+.sched-form h2, .sched-form p { margin: 0; }
+.sched-row { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+.sched-form .inline, .sched-row .inline { display: inline-flex; gap: .4rem; align-items: center; }
+.sched-form .buttons { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+.runs { margin: 0; padding-left: 1.1rem; }
+.services { columns: 3 14rem; margin: .5rem 0 0; padding-left: 1.1rem; }
+.services a { color: var(--accent); }
+.services code { color: var(--muted); }
+#target-table td.err { color: var(--error); }
+
 /* overview */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .7rem; margin-top: .4rem; }
 .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .8rem 1rem; }

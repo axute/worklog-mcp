@@ -19,6 +19,10 @@
     POST /ui/api/duplicates/ignore  {"ids": [ids]}: "not a duplicate", never shown again (write)
     GET  /ui/api/export             same filters as /ui/api/entries, format=md|csv|json -> file download
     POST /ui/api/import             a JSON export (owner = the signed-in user); ?update=true overwrites (write)
+    GET  /ui/api/notify             allowed services, own targets (masked), report schedule, last runs (proxy sign-in)
+    POST /ui/api/notify/targets     {"url", "label"}; .../{id}/delete, .../{id}/test  (proxy sign-in)
+    POST /ui/api/notify/schedule    {"weekly", "weekday", "monthly", "time"}       (proxy sign-in)
+    POST /ui/api/notify/send        {"period": "last-week"|"last-month"}: send now (proxy sign-in)
     GET  /ui/api/tokens             own tokens (proxy sign-in)
     POST /ui/api/tokens             {"name", "scopes"} -> new own token, shown once (proxy sign-in)
     POST /ui/api/tokens/{name}/revoke  revoke an own token (proxy sign-in)
@@ -59,7 +63,7 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, R
 from .auth import (NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_token, create_session, create_token,
                    owner_of)
 from .config import Settings
-from .db import SCOPES, Database, as_dict
+from .db import SCOPES, Database, as_dict, from_db_ts
 from .dupes import find_groups
 from .report import (TIMESHEET_UNITS, read_export, stats, timesheet, timesheet_csv, to_csv, to_json,
                      to_markdown)
@@ -484,6 +488,98 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         log.info("project_renamed", extra={"by": who.owner, "status": {"entries": moved, "merged": merged}})
         return _json({"from": old, "to": new, "entries": moved, "merged": merged})
     reads("/api", allow_cookie=False)   # scripts: bearer only, so cookies never reach /api
+
+    # ------------------------------------------------------------------ notifications (proxy sign-in)
+    # Only with proxy sign-in: whoever sets a target receives the user's reports, so an agent's
+    # token must not be able to add one.
+
+    from . import notify as nt
+
+    def target_dict(t: dict) -> dict:
+        return {"id": t["id"], "label": t["label"], "target": nt.mask(t["url"]), "service": nt.scheme_of(t["url"]),
+                "created_at": _iso(from_db_ts(t["created_at"]), tz),
+                "last_ok_at": _iso(from_db_ts(t["last_ok_at"]), tz) if t["last_ok_at"] else None,
+                "last_error": t["last_error"]}
+
+    @mcp.custom_route("/ui/api/notify", methods=["GET"], include_in_schema=False)
+    async def notify_settings(request: Request) -> Response:
+        who, err = manager(request, change=False, tokens=True)
+        if err:
+            return err
+        return _json({"services": nt.services(settings),
+                      "targets": [target_dict(t) for t in db.notify_targets(owner=who.owner)],
+                      "schedule": db.report_schedule(owner=who.owner),
+                      "runs": [{**r, "sent_at": _iso(from_db_ts(r["sent_at"]), tz)} for r in db.report_runs(owner=who.owner)],
+                      "scheduler": settings.scheduler,
+                      "docs": "https://appriseit.com/services/"})
+
+    @mcp.custom_route("/ui/api/notify/targets", methods=["POST"], include_in_schema=False)
+    async def add_target(request: Request) -> Response:
+        who, err = manager(request, change=True, tokens=True)
+        if err:
+            return err
+        try:
+            body = await json_object(request)
+            url = nt.check_target(str(body.get("url") or ""), settings)
+            target_id = db.add_notify_target(owner=who.owner, url=url, label=body.get("label"))
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        log.info("notify_target_added", extra={"by": who.owner, "status": nt.scheme_of(url)})
+        t = next(t for t in db.notify_targets(owner=who.owner) if t["id"] == target_id)
+        return _json(target_dict(t), 201)
+
+    @mcp.custom_route("/ui/api/notify/targets/{target_id:int}/delete", methods=["POST"], include_in_schema=False)
+    async def delete_target(request: Request) -> Response:
+        who, err = manager(request, change=True, tokens=True)
+        if err:
+            return err
+        try:
+            db.delete_notify_target(owner=who.owner, target_id=request.path_params["target_id"])
+        except KeyError:
+            return _json({"error": "unknown target"}, 404)
+        return _json({"deleted": request.path_params["target_id"]})
+
+    @mcp.custom_route("/ui/api/notify/targets/{target_id:int}/test", methods=["POST"], include_in_schema=False)
+    async def test_target(request: Request) -> Response:
+        who, err = manager(request, change=True, tokens=True)
+        if err:
+            return err
+        target_id = request.path_params["target_id"]
+        if not any(t["id"] == target_id for t in db.notify_targets(owner=who.owner)):
+            return _json({"error": "unknown target"}, 404)
+        import asyncio
+        await asyncio.to_thread(nt.send_to_targets, db, who.owner, settings, "Worklog test",
+                                "If you can read this, notifications work.", target_id)
+        t = next(t for t in db.notify_targets(owner=who.owner) if t["id"] == target_id)
+        return _json(target_dict(t))
+
+    @mcp.custom_route("/ui/api/notify/schedule", methods=["POST"], include_in_schema=False)
+    async def set_schedule(request: Request) -> Response:
+        who, err = manager(request, change=True, tokens=True)
+        if err:
+            return err
+        try:
+            b = await json_object(request)
+            result = db.set_report_schedule(owner=who.owner, weekly=b.get("weekly"), weekday=b.get("weekday"),
+                                            monthly=b.get("monthly"), time=b.get("time"))
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        return _json(result)
+
+    @mcp.custom_route("/ui/api/notify/send", methods=["POST"], include_in_schema=False)
+    async def send_now(request: Request) -> Response:
+        who, err = manager(request, change=True, tokens=True)
+        if err:
+            return err
+        try:
+            period = (await json_object(request)).get("period")
+            if period not in ("last-week", "last-month", "this-week", "this-month"):
+                raise ValueError("period must be last-week, last-month, this-week or this-month")
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        import asyncio
+        result = await asyncio.to_thread(nt.send_report, db, who.owner, settings, period)
+        return _json({"result": result, "targets": [target_dict(t) for t in db.notify_targets(owner=who.owner)]})
 
     # ------------------------------------------------------------------ own tokens (proxy sign-in)
 

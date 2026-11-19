@@ -210,7 +210,8 @@ def test_migration_6_keeps_data(tmp_path):
     d.add_entry(owner="alice", agent="a", source="hook", project="p", summary="vorher da")
     d.close()
     conn = sqlite3.connect(path)                     # roll the schema back to version 5
-    conn.executescript("DROP TABLE projects; PRAGMA user_version = 5;")
+    conn.executescript("DROP TABLE projects; DROP TABLE notify_targets; DROP TABLE report_schedules; "
+                       "DROP TABLE report_runs; PRAGMA user_version = 5;")
     conn.close()
     d = Database(path)
     assert d.schema_version() == len(MIGRATIONS)

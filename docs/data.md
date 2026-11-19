@@ -66,6 +66,8 @@ line=$(docker exec worklog-mcp worklog report --owner alice --period last-week -
 
 ### Notifications
 
+Each user can set up targets and a weekly or monthly schedule in the web view under **Settings**; the server then sends the reports itself – see [Reports by notification](web.md#reports-by-notification). The command line below is for admins and cron jobs.
+
 Reports can also go to ntfy, Discord, Telegram, Matrix, Slack, e-mail and [many more services](https://appriseit.com/services/) through [Apprise](https://github.com/caronc/apprise). A target is a URL, for example `ntfy://my-topic`, `discord://webhook_id/webhook_token`, `tgram://bot_token/chat_id` or `mailto://user:password@example.com`. Put one or more (separated by spaces or commas) into `WORKLOG_NOTIFY`, or pass `--notify-url` (repeatable):
 
 ```bash

@@ -24,6 +24,7 @@
 
 - **Duplicates:** entries that look like the same work logged twice (same project, at most 3 hours apart, nearly the same summary; summaries with different numbers never count) are shown above the list. Pick the one to keep and merge: details and tags are combined, the longest duration counts once, the earliest time stays, the others are deleted. *Not a duplicate* hides the group for good. Both need write rights.
 - **Corrections** (need write rights): edit or delete an entry (open it, then *Edit* / *Delete*); with a project filter set, *Rename project …* renames it, or merges it into an existing project.
+- **Settings** (only after signing in through the proxy): reports by notification, see [below](#reports-by-notification).
 - **Tokens** (only after signing in through the proxy): create your tokens, see when each was last used, revoke them. A new token is shown once.
 
 ## Signing in through a reverse proxy (recommended)
@@ -53,3 +54,16 @@ The browser gets a signed session cookie (HttpOnly, SameSite=Strict, Secure behi
 ## JSON for scripts
 
 `GET /api/entries` (`q`, `project`, `agent`, `source`, `since`, `until`, `limit`, `offset`), `GET /api/facets` and `GET /api/stats` with a bearer token that has the `read` scope. The page itself uses the same endpoints below `/ui/api/`.
+
+## Reports by notification
+
+Under **Settings** every user sets up their own reports:
+
+- **Targets:** [Apprise](https://github.com/caronc/apprise) URLs such as `ntfy://my-topic`, `tgram://bot-token/chat-id`, `discord://webhook_id/webhook_token` or `mailto://user:password@example.com`, each with an optional name, a *Test* button and the last delivery or error. URLs often contain access tokens, so after saving the page shows only the service and the last four characters.
+- **Schedule:** a weekly report on a chosen weekday and time (it covers the last complete week, Monday to Sunday; if the server was down at that time, it is sent later that week) and a monthly report on the 1st (the previous month). *Send now* sends last week's or last month's report right away.
+- The message has the totals and the largest projects. The server sends it itself; no cron job needed (`WORKLOG_SCHEDULER=off` switches that off).
+
+Two rules keep this safe:
+
+- **Only with proxy sign-in.** Whoever adds a target receives the reports, so a token – even one with write rights – can't see or change notification settings.
+- **Only allowed services.** By default these are well-known chat, push and mail services (ntfy, Discord, Telegram, Slack, Matrix, Gotify, Pushover, Pushbullet, e-mail, Signal, Rocket.Chat, Mattermost, Zulip, Google Chat, Threema, WhatsApp, Teams workflows, Bark, PushMe, Line). Generic webhooks (`json://`, `xml://`, `form://`) and relays (`apprise://`) are not allowed, because they can call any address, including ones inside your network. *Which services are allowed?* in the settings lists the current set with a link to each service's URL format. The admin changes it with `WORKLOG_NOTIFY_ALLOW` and `WORKLOG_NOTIFY_DENY` (see [Configuration](configuration.md)). Note that self-hostable services (ntfy, Gotify, Matrix, e-mail) may also point to servers in your own network – which is usually what you want.

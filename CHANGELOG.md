@@ -4,6 +4,11 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- Web view, **Settings** (proxy sign-in only): per-user notification targets (Apprise URLs, shown masked, with test and last result) and a weekly or monthly report schedule; the server sends due reports itself and catches up after downtime.
+- Only well-known services are allowed as targets; `WORKLOG_NOTIFY_ALLOW` / `WORKLOG_NOTIFY_DENY` change the list, the settings page shows it with links to each service's URL format.
+- `WORKLOG_SCHEDULER=off` to switch the scheduler off.
+
 ## [1.0.0] – 2026-11-19
 
 First release. Everything below is new.

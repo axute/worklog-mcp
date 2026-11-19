@@ -148,6 +148,35 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (owner, name)
     );
     """,
+    # 7: per-user notification targets (Apprise URLs), report schedule and sent reports
+    """
+    CREATE TABLE notify_targets (
+        id         INTEGER PRIMARY KEY,
+        owner      TEXT NOT NULL,
+        label      TEXT,
+        url        TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        last_error TEXT
+    );
+    CREATE INDEX notify_targets_owner ON notify_targets (owner);
+    CREATE TABLE report_schedules (
+        owner      TEXT PRIMARY KEY,
+        weekly     INTEGER NOT NULL DEFAULT 0,
+        weekday    INTEGER NOT NULL DEFAULT 0 CHECK (weekday BETWEEN 0 AND 6),
+        monthly    INTEGER NOT NULL DEFAULT 0,
+        at_time    TEXT NOT NULL DEFAULT '07:30',
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE report_runs (
+        owner   TEXT NOT NULL,
+        kind    TEXT NOT NULL,
+        label   TEXT NOT NULL,
+        sent_at TEXT NOT NULL,
+        result  TEXT NOT NULL,
+        PRIMARY KEY (owner, kind, label)
+    );
+    """,
 ]
 
 OWNER_SCHEMA = """
@@ -851,6 +880,84 @@ class Database:
             self._conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
                                (f"secret:{name}", secrets.token_hex(32)))
             return self._conn.execute("SELECT value FROM meta WHERE key = ?", (f"secret:{name}",)).fetchone()[0]
+
+    # ------------------------------------------------------------------ notifications (per user)
+
+    def notify_targets(self, *, owner: str) -> list[dict[str, Any]]:
+        """Targets of a user, including the URL: never hand these out unmasked."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM notify_targets WHERE owner = ? ORDER BY id",
+                                      (clean_owner(owner),)).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_notify_target(self, *, owner: str, url: str, label: str | None) -> int:
+        owner = clean_owner(owner)
+        with self._lock:
+            if self._conn.execute("SELECT COUNT(*) FROM notify_targets WHERE owner = ?", (owner,)).fetchone()[0] >= 20:
+                raise ValueError("at most 20 notification targets per user")
+            cur = self._conn.execute(
+                "INSERT INTO notify_targets (owner, label, url, created_at) VALUES (?, ?, ?, ?)",
+                (owner, (label or "").strip()[:60] or None, url, to_db_ts(utcnow())))
+        return cur.lastrowid
+
+    def delete_notify_target(self, *, owner: str, target_id: int) -> None:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM notify_targets WHERE owner = ? AND id = ?",
+                                     (clean_owner(owner), int(target_id)))
+        if cur.rowcount == 0:
+            raise KeyError(target_id)
+
+    def notify_result(self, target_id: int, error: str | None) -> None:
+        with self._lock:
+            if error:
+                self._conn.execute("UPDATE notify_targets SET last_error = ? WHERE id = ?", (error[:200], target_id))
+            else:
+                self._conn.execute("UPDATE notify_targets SET last_ok_at = ?, last_error = NULL WHERE id = ?",
+                                   (to_db_ts(utcnow()), target_id))
+
+    def report_schedule(self, *, owner: str) -> dict[str, Any]:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM report_schedules WHERE owner = ?", (clean_owner(owner),)).fetchone()
+        return {"weekly": bool(r["weekly"]), "weekday": r["weekday"], "monthly": bool(r["monthly"]),
+                "time": r["at_time"]} if r else {"weekly": False, "weekday": 0, "monthly": False, "time": "07:30"}
+
+    def set_report_schedule(self, *, owner: str, weekly: bool, weekday: int, monthly: bool, time: str) -> dict[str, Any]:
+        if not isinstance(weekly, bool) or not isinstance(monthly, bool):
+            raise ValueError("weekly and monthly must be true or false")
+        if not isinstance(weekday, int) or isinstance(weekday, bool) or not 0 <= weekday <= 6:
+            raise ValueError("weekday must be 0 (Monday) to 6 (Sunday)")
+        if not isinstance(time, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", time):
+            raise ValueError("time must look like 07:30")
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO report_schedules (owner, weekly, weekday, monthly, at_time, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (owner) DO UPDATE SET weekly = excluded.weekly, weekday = excluded.weekday,
+                       monthly = excluded.monthly, at_time = excluded.at_time, updated_at = excluded.updated_at""",
+                (clean_owner(owner), int(weekly), weekday, int(monthly), time, to_db_ts(utcnow())))
+        return self.report_schedule(owner=owner)
+
+    def scheduled_owners(self) -> list[str]:
+        """Users with an active report schedule (for the scheduler; it reads per user afterwards)."""
+        with self._lock:
+            return [r[0] for r in self._conn.execute(
+                "SELECT owner FROM report_schedules WHERE weekly = 1 OR monthly = 1").fetchall()]
+
+    def report_sent(self, *, owner: str, kind: str, label: str) -> bool:
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM report_runs WHERE owner = ? AND kind = ? AND label = ?",
+                                      (clean_owner(owner), kind, label)).fetchone() is not None
+
+    def record_report(self, *, owner: str, kind: str, label: str, result: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR REPLACE INTO report_runs (owner, kind, label, sent_at, result) "
+                               "VALUES (?, ?, ?, ?, ?)", (clean_owner(owner), kind, label, to_db_ts(utcnow()), result))
+
+    def report_runs(self, *, owner: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT kind, label, sent_at, result FROM report_runs WHERE owner = ? "
+                                      "ORDER BY sent_at DESC LIMIT ?", (clean_owner(owner), limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def instance_id(self) -> str:
         """Random id of this database, part of the external ids of exported entries."""

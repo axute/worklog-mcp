@@ -30,6 +30,7 @@
       <button type="button" role="tab" id="tab-timesheet" data-tab="timesheet" data-t="timesheet"></button>
       <button type="button" role="tab" id="tab-projects" data-tab="projects" data-t="projectsTab"></button>
       <button type="button" role="tab" id="tab-tokens" data-tab="tokens" data-t="tokens" hidden></button>
+      <button type="button" role="tab" id="tab-settings" data-tab="settings" data-t="settings" hidden></button>
     </nav>
     <span class="who"><span id="who" class="muted"></span>
       <button type="button" id="logout" class="link" data-t="signOut" hidden></button>
@@ -149,6 +150,53 @@
         <label class="small"><input type="checkbox" id="pr-archived"> <span data-t="showArchived"></span></label>
       </div>
       <div class="table-wrap pr-wrap"><table id="pr-table" class="pr"></table></div>
+    </section>
+  </main>
+
+  <main id="view-settings" hidden>
+    <form id="sched-form" class="card sched-form">
+      <h2 data-t="reports"></h2>
+      <p class="muted small" data-t="reportsHint"></p>
+      <p id="sched-off" class="error" data-t="schedulerOff" hidden></p>
+      <div class="sched-row">
+        <label class="inline"><input type="checkbox" id="sched-weekly"> <span data-t="weeklyReport"></span></label>
+        <select id="sched-weekday" data-ta="weekday"></select>
+      </div>
+      <div class="sched-row">
+        <label class="inline"><input type="checkbox" id="sched-monthly"> <span data-t="monthlyReport"></span></label>
+      </div>
+      <div class="sched-row">
+        <label class="inline"><span data-t="atTime"></span> <input type="time" id="sched-time" required></label>
+      </div>
+      <div class="buttons">
+        <button type="submit" class="primary" data-t="save"></button>
+        <span id="sched-saved" class="muted small"></span>
+      </div>
+      <div class="buttons small">
+        <span class="muted" data-t="sendNow"></span>
+        <button type="button" class="link" data-send="last-week" data-t="lastWeek"></button>
+        <button type="button" class="link" data-send="last-month" data-t="lastMonth"></button>
+        <span id="send-result" class="muted"></span>
+      </div>
+      <ul id="runs" class="runs small muted"></ul>
+    </form>
+
+    <section class="card">
+      <h2 data-t="targets"></h2>
+      <p class="muted small" data-t="targetsHint"></p>
+      <div class="table-wrap"><table id="target-table" class="pr"></table></div>
+      <form id="target-form" class="pr-form" autocomplete="off">
+        <label class="field"><span data-t="labelLbl"></span><input id="target-label" maxlength="60"></label>
+        <label class="field wide"><span data-t="urlLbl"></span>
+          <input id="target-url" required spellcheck="false" autocapitalize="off" placeholder="ntfy://my-topic"></label>
+        <div class="buttons"><button type="submit" class="primary" data-t="addTarget"></button></div>
+        <p id="target-error" class="error wide" role="alert"></p>
+      </form>
+      <details class="table-view">
+        <summary data-t="allowedServices"></summary>
+        <p class="muted small" data-t="allowedHint"></p>
+        <ul id="services" class="services small"></ul>
+      </details>
     </section>
   </main>
 

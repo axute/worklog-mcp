@@ -25,6 +25,10 @@ class Settings:
     # stdio transport (the client starts the server itself): no token, so user and agent come from here
     stdio_owner: str = ""
     stdio_agent: str = "stdio"
+    # notifications set up in the web view: extra / removed Apprise schemes, scheduler on/off
+    notify_allow: frozenset[str] = field(default_factory=frozenset)
+    notify_deny: frozenset[str] = field(default_factory=frozenset)
+    scheduler: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -41,4 +45,11 @@ class Settings:
             legacy_owner=os.environ.get("WORKLOG_LEGACY_OWNER", "").strip(),
             stdio_owner=os.environ.get("WORKLOG_OWNER", "").strip(),
             stdio_agent=os.environ.get("WORKLOG_AGENT", "").strip() or "stdio",
+            notify_allow=_schemes(os.environ.get("WORKLOG_NOTIFY_ALLOW", "")),
+            notify_deny=_schemes(os.environ.get("WORKLOG_NOTIFY_DENY", "")),
+            scheduler=os.environ.get("WORKLOG_SCHEDULER", "on").strip().lower() not in ("off", "0", "false", "no"),
         )
+
+
+def _schemes(value: str) -> frozenset[str]:
+    return frozenset(x.strip().lower().removesuffix("://") for x in value.replace(",", " ").split() if x.strip())

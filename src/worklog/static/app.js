@@ -30,6 +30,16 @@ const TEXT = {
     showDupes: 'Review', hideDupes: 'Hide', similar: 'similar ({0} %)', keepThis: 'Keep the selected one and merge',
     notDupe: 'Not a duplicate', mergeHelp: 'Details and tags are combined, the longest duration counts once, the others are deleted.',
     backfilled: 'logged afterwards on {0}', importJson: 'Import',
+    settings: 'Settings', reports: 'Reports by notification',
+    reportsHint: 'The server sends a short summary (time, entries, largest projects) to all your targets below. Weekly: the last complete week (Monday to Sunday), sent from the chosen day and time on. Monthly: the previous month, sent on the 1st.',
+    schedulerOff: 'The scheduler is switched off on this server (WORKLOG_SCHEDULER=off): reports are only sent with "send now".',
+    weeklyReport: 'Weekly report on', monthlyReport: 'Monthly report', atTime: 'at', sendNow: 'Send now:',
+    lastWeek: 'last week', lastMonth: 'last month', saved: 'Saved.', sentResult: 'Result: {0}',
+    targets: 'Notification targets', targetsHint: 'Apprise URLs, e.g. ntfy://my-topic or tgram://bot-token/chat-id. They often contain access tokens, so after saving only the end is shown.',
+    labelLbl: 'Name (optional)', urlLbl: 'Apprise URL', addTarget: 'Add', test: 'Test', service: 'Service',
+    lastOk: 'Last delivered', lastError: 'Last error', allowedServices: 'Which services are allowed?',
+    allowedHint: 'Services this server allows (set by the admin with WORKLOG_NOTIFY_ALLOW / WORKLOG_NOTIFY_DENY). Each link explains the URL format.',
+    noTargets: 'No targets yet.', deleteTarget: 'Delete this notification target?',
     timesheet: 'Hours', projectsTab: 'Projects', newEntry: '+ Entry', newEntryTitle: 'New entry', whenLbl: 'When',
     activity: 'Activity', less: 'less', moreLegend: 'more', unitAuto: 'Auto', unitDay: 'Day', unitWeek: 'Week',
     unitMonth: 'Month', rounding: 'Round up to', roundNone: 'exact', total: 'Total', week: 'Week {0}',
@@ -70,6 +80,16 @@ const TEXT = {
     keepThis: 'Ausgewählten behalten und zusammenführen', notDupe: 'Kein Duplikat',
     mergeHelp: 'Details und Tags werden zusammengelegt, die längste Dauer zählt einmal, die anderen werden gelöscht.',
     backfilled: 'nachgetragen am {0}', importJson: 'Import',
+    settings: 'Einstellungen', reports: 'Berichte als Benachrichtigung',
+    reportsHint: 'Der Server schickt eine kurze Zusammenfassung (Zeit, Einträge, größte Projekte) an alle deine Ziele unten. Wöchentlich: die letzte vollständige Woche (Montag bis Sonntag), ab dem gewählten Tag und der Uhrzeit. Monatlich: der Vormonat, am 1.',
+    schedulerOff: 'Der Zeitplaner ist auf diesem Server ausgeschaltet (WORKLOG_SCHEDULER=off): Berichte gehen nur mit „Jetzt senden“ raus.',
+    weeklyReport: 'Wochenbericht am', monthlyReport: 'Monatsbericht', atTime: 'um', sendNow: 'Jetzt senden:',
+    lastWeek: 'letzte Woche', lastMonth: 'letzter Monat', saved: 'Gespeichert.', sentResult: 'Ergebnis: {0}',
+    targets: 'Benachrichtigungsziele', targetsHint: 'Apprise-URLs, z. B. ntfy://mein-topic oder tgram://bot-token/chat-id. Sie enthalten oft Zugangsdaten, deshalb wird nach dem Speichern nur noch das Ende angezeigt.',
+    labelLbl: 'Name (optional)', urlLbl: 'Apprise-URL', addTarget: 'Hinzufügen', test: 'Testen', service: 'Dienst',
+    lastOk: 'Zuletzt zugestellt', lastError: 'Letzter Fehler', allowedServices: 'Welche Dienste sind erlaubt?',
+    allowedHint: 'Dienste, die dieser Server erlaubt (vom Admin per WORKLOG_NOTIFY_ALLOW / WORKLOG_NOTIFY_DENY festgelegt). Jeder Link erklärt das URL-Format.',
+    noTargets: 'Noch keine Ziele.', deleteTarget: 'Dieses Benachrichtigungsziel löschen?',
     timesheet: 'Stunden', projectsTab: 'Projekte', newEntry: '+ Eintrag', newEntryTitle: 'Neuer Eintrag', whenLbl: 'Wann',
     activity: 'Aktivität', less: 'weniger', moreLegend: 'mehr', unitAuto: 'Auto', unitDay: 'Tag', unitWeek: 'Woche',
     unitMonth: 'Monat', rounding: 'Aufrunden auf', roundNone: 'exakt', total: 'Summe', week: 'KW {0}',
@@ -141,7 +161,7 @@ let me = null;           // { user, agent, via, manage_tokens, can_edit, logout_
 let facets = null;       // last /api/facets answer
 let dupes = [];          // groups of likely duplicates
 let dupesOpen = false;
-const TABS = () => ['entries', 'overview', 'timesheet', 'projects', ...(me && me.manage_tokens ? ['tokens'] : [])];
+const TABS = () => ['entries', 'overview', 'timesheet', 'projects', ...(me && me.manage_tokens ? ['tokens', 'settings'] : [])];
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -266,7 +286,8 @@ function syncControls() {
   $('view-tokens').hidden = state.tab !== 'tokens';
   $('view-timesheet').hidden = state.tab !== 'timesheet';
   $('view-projects').hidden = state.tab !== 'projects';
-  $('filters').hidden = ['tokens', 'projects'].includes(state.tab);
+  $('view-settings').hidden = state.tab !== 'settings';
+  $('filters').hidden = ['tokens', 'projects', 'settings'].includes(state.tab);
   $('f-rename').hidden = !(me && me.can_edit && state.project && ['entries', 'overview', 'timesheet'].includes(state.tab));
   $('new-entry').hidden = !(me && me.can_edit && state.tab === 'entries');
   if (state.tab !== 'entries') $('new-entry-form').hidden = true;
@@ -300,6 +321,7 @@ function refresh() {
   else if (state.tab === 'overview') loadOverview();
   else if (state.tab === 'timesheet') loadTimesheet();
   else if (state.tab === 'projects') loadProjectList();
+  else if (state.tab === 'settings') loadSettings();
   else loadTokens();
 }
 async function loadEntries(reset) {
@@ -589,6 +611,114 @@ function projectForm(p) {
   td.append(form);
   tr.append(td);
   return tr;
+}
+
+// ---------------------------------------------------------------- settings: notifications (proxy sign-in)
+
+const weekdayFmt = new Intl.DateTimeFormat(lang, { weekday: 'long' });
+const fmtTime = (s) => (s ? dateTimeFmt.format(new Date(s)) : '–');
+async function loadSettings() {
+  const my = ++seq;
+  $('status').textContent = t('loading');
+  try {
+    const data = await api('api/notify');
+    if (my !== seq) return;
+    $('status').textContent = '';
+    renderSettings(data);
+  } catch (e) {
+    if (my === seq && e.message !== '401') $('status').textContent = t('error', e.message);
+  }
+}
+function renderSettings(data) {
+  const s = data.schedule;
+  const day = $('sched-weekday');
+  if (!day.options.length) {
+    for (let i = 0; i < 7; i++) day.append(new Option(weekdayFmt.format(new Date(2024, 0, 1 + i)), String(i)));  // 1.1.2024 = Monday
+  }
+  $('sched-weekly').checked = s.weekly;
+  day.value = String(s.weekday);
+  $('sched-monthly').checked = s.monthly;
+  $('sched-time').value = s.time;
+  $('sched-off').hidden = data.scheduler;
+  const runs = $('runs');
+  runs.textContent = '';
+  for (const r of data.runs) runs.append(el('li', null, `${r.label} · ${fmtTime(r.sent_at)} · ${r.result}`));
+  renderTargets(data.targets);
+  const list = $('services');
+  list.textContent = '';
+  for (const sv of data.services) {
+    const li = el('li');
+    const a = el('a', null, sv.name);
+    a.href = sv.docs || data.docs;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    li.append(a, document.createTextNode(' '), el('code', null, sv.schemes.map((x) => x + '://').join(' ')));
+    list.append(li);
+  }
+}
+function renderTargets(targets) {
+  const table = $('target-table');
+  table.textContent = '';
+  const head = table.createTHead().insertRow();
+  for (const k of ['labelLbl', 'service', 'urlLbl', 'lastOk', '']) head.append(el('th', null, k ? t(k) : ''));
+  const body = table.createTBody();
+  for (const x of targets) {
+    const tr = body.insertRow();
+    const actions = el('td', 'actions');
+    const test = el('button', 'link', t('test'));
+    test.type = 'button';
+    test.addEventListener('click', async () => {
+      test.disabled = true;
+      try { await apiPost(`api/notify/targets/${x.id}/test`); } catch (e) { if (e.message !== '401') alert(t('error', e.message)); }
+      loadSettings();
+    });
+    const del = el('button', 'danger', t('del'));
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!confirm(t('deleteTarget'))) return;
+      try { await apiPost(`api/notify/targets/${x.id}/delete`); } catch (e) { if (e.message !== '401') alert(t('error', e.message)); }
+      loadSettings();
+    });
+    actions.append(test, document.createTextNode(' '), del);
+    tr.append(el('td', null, x.label || '–'), el('td', null, x.service), el('td', null, x.target),
+      el('td', x.last_error ? 'err' : null, x.last_error ? `${t('lastError')}: ${x.last_error}` : fmtTime(x.last_ok_at)), actions);
+  }
+  if (!targets.length) body.insertRow().append(el('td', 'muted', t('noTargets')));
+}
+async function saveSchedule(ev) {
+  ev.preventDefault();
+  $('sched-saved').textContent = '';
+  try {
+    await apiPost('api/notify/schedule', { weekly: $('sched-weekly').checked, weekday: Number($('sched-weekday').value),
+      monthly: $('sched-monthly').checked, time: $('sched-time').value });
+    $('sched-saved').textContent = t('saved');
+  } catch (e) {
+    if (e.message !== '401') $('sched-saved').textContent = e.message;
+  }
+}
+async function addTarget(ev) {
+  ev.preventDefault();
+  $('target-error').textContent = '';
+  try {
+    await apiPost('api/notify/targets', { url: $('target-url').value.trim(), label: $('target-label').value.trim() });
+    $('target-url').value = '';
+    $('target-label').value = '';
+    loadSettings();
+  } catch (e) {
+    if (e.message !== '401') $('target-error').textContent = e.message;
+  }
+}
+async function sendNow(period, button) {
+  button.disabled = true;
+  $('send-result').textContent = t('loading');
+  try {
+    const r = await apiPost('api/notify/send', { period });
+    $('send-result').textContent = t('sentResult', r.result);
+    renderTargets(r.targets);
+  } catch (e) {
+    if (e.message !== '401') $('send-result').textContent = e.message;
+  }
+  button.disabled = false;
 }
 
 // ---------------------------------------------------------------- new entry by hand
@@ -1065,6 +1195,7 @@ async function start(session) {
   // token sign-in shows which token is used: "laptop · axute"
   $('who').textContent = session.agent ? `${session.agent} · ${session.user}` : session.user;
   $('tab-tokens').hidden = !session.manage_tokens;
+  $('tab-settings').hidden = !session.manage_tokens;
   $('logout').hidden = session.via !== 'session';
   $('logout-link').hidden = !session.logout_url;
   if (session.logout_url) $('logout-link').href = session.logout_url;
@@ -1127,6 +1258,9 @@ function init() {
   $('f-rename').addEventListener('click', renameProject);
   $('import-btn').addEventListener('click', () => $('import-file').click());
   $('new-entry').addEventListener('click', openNewEntry);
+  $('sched-form').addEventListener('submit', saveSchedule);
+  $('target-form').addEventListener('submit', addTarget);
+  for (const b of document.querySelectorAll('[data-send]')) b.addEventListener('click', () => sendNow(b.dataset.send, b));
   $('pr-archived').addEventListener('change', renderProjectList);
   $('ts-round').addEventListener('change', () => { state.round = $('ts-round').value; changed(); });
   for (const b of document.querySelectorAll('[data-unit]')) {

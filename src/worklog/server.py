@@ -375,7 +375,11 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging()
     settings = Settings.from_env()
-    app = create_app(settings)
+    db = Database(settings.db_path, legacy_owner=settings.legacy_owner)
+    app = create_app(settings, db)
+    if settings.scheduler:
+        from .notify import start_scheduler
+        start_scheduler(db, settings)  # reports set up in the web view
     log.info("starting", extra={"path": "/mcp"})
     # access log off: request lines would only add noise; errors are still logged
     uvicorn.run(app, host=settings.host, port=settings.port, log_config=None, access_log=False)
