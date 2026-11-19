@@ -58,6 +58,9 @@ def test_check_target_and_mask(settings):
         with pytest.raises(ValueError):
             nt.check_target(bad, settings)
     assert nt.mask("tgram://123456:ABCDEFsecret/987654") == "tgram://…7654"
+    with pytest.raises(ValueError, match="%40"):
+        nt.check_target("mailtos://me@example.com:secret@mail.example.com?to=me@example.com", settings)
+    assert nt.check_target("mailtos://me%40example.com:secret@mail.example.com?to=me@example.com", settings)
     assert nt.mask("ntfy://abc") == "ntfy://…"
 
 

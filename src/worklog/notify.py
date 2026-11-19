@@ -103,7 +103,13 @@ def check_target(url: str, settings) -> str:
     if scheme not in allowed_schemes(settings):
         raise ValueError(f"the service {scheme}:// is not allowed on this server")
     if not apprise.Apprise().add(url):
-        raise ValueError(f"Apprise does not understand this {scheme}:// URL; check the service's documentation")
+        rest = url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0]
+        if rest.count("@") > 1 or ("@" in rest and re.search(r"[#?/]", url.split("://", 1)[1].split("@")[0])):
+            hint = ("special characters in the user name or password must be encoded, e.g. @ as %40, "
+                    "/ as %2F, # as %23, ? as %3F, & as %26, : as %3A")
+        else:
+            hint = "check the service's documentation (linked under 'Which services are allowed?')"
+        raise ValueError(f"Apprise does not understand this {scheme}:// URL: {hint}")
     return url
 
 

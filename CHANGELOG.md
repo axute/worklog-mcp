@@ -4,6 +4,10 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Changed
+- Clearer error for notification URLs with unencoded special characters (e.g. an e-mail address as user name: `@` must be `%40`).
+- Release tags publish `server.json` to the MCP Registry automatically (GitHub OIDC, no manual login); the version comes from the tag.
+
 ## [1.1.0] – 2026-11-19
 
 ### Added
