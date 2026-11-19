@@ -1,6 +1,6 @@
 """Plain REST endpoints for hooks and the importer (no MCP needed).
 
-    POST /api/entries        one entry, source "hook"        (scope write)
+    POST /api/entries        one entry, source "hook"        (scope write); optional ts for earlier work
     POST /api/entries/bulk   up to 500 entries with external_id, source "import"
                              (scope write); ?update=true overwrites known ids
     GET  /healthz            "ok", no token
@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from .auth import check_token, owner_of
 from .config import Settings
 from .db import BULK_MAX, Database
+from .times import work_time  # same rules as the MCP tools: date = noon, not in the future
 
 log = logging.getLogger("worklog.api")
 
@@ -73,7 +74,7 @@ def register_api(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return err
         if not isinstance(data, dict):
             return _error(400, "body must be a JSON object")
-        unknown = set(data) - {"project", "summary", "details", "tags", "duration_min", "session_id"}
+        unknown = set(data) - {"project", "summary", "details", "tags", "duration_min", "session_id", "ts"}
         if unknown:
             return _error(400, f"unknown fields: {', '.join(sorted(unknown))}")
         tags = data.get("tags")
@@ -83,8 +84,11 @@ def register_api(mcp: FastMCP, db: Database, settings: Settings) -> None:
         if duration is not None and (not isinstance(duration, int) or isinstance(duration, bool)):
             return _error(400, "duration_min must be an integer")
         try:
+            when = work_time(data["ts"], tz) if isinstance(data.get("ts"), str) else None
+            if data.get("ts") is not None and not isinstance(data.get("ts"), str):
+                raise ValueError("ts must be an ISO date or datetime string")
             entry = db.add_entry(
-                owner=owner, agent=agent, source="hook", project=str(data.get("project") or ""),
+                owner=owner, agent=agent, source="hook", ts=when, project=str(data.get("project") or ""),
                 summary=str(data.get("summary") or ""), details=data.get("details"),
                 tags=tags, duration_min=duration, session_id=data.get("session_id"),
             )

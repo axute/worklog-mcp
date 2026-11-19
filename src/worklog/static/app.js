@@ -29,6 +29,7 @@ const TEXT = {
     oneDupe: '1 possible duplicate: the same work seems to be logged more than once.',
     showDupes: 'Review', hideDupes: 'Hide', similar: 'similar ({0} %)', keepThis: 'Keep the selected one and merge',
     notDupe: 'Not a duplicate', mergeHelp: 'Details and tags are combined, the longest duration counts once, the others are deleted.',
+    backfilled: 'logged afterwards on {0}',
     edit: 'Edit', del: 'Delete', save: 'Save', cancel: 'Cancel', summaryLbl: 'Summary', detailsLbl: 'Details',
     tagsLbl: 'Tags (comma separated)', minutesLbl: 'Minutes', deleteConfirm: 'Delete this entry? This cannot be undone.',
     renameProject: 'Rename project …', renamePrompt: 'New name for the project "{0}":',
@@ -60,6 +61,7 @@ const TEXT = {
     showDupes: 'Ansehen', hideDupes: 'Ausblenden', similar: 'ähnlich ({0} %)',
     keepThis: 'Ausgewählten behalten und zusammenführen', notDupe: 'Kein Duplikat',
     mergeHelp: 'Details und Tags werden zusammengelegt, die längste Dauer zählt einmal, die anderen werden gelöscht.',
+    backfilled: 'nachgetragen am {0}',
     edit: 'Bearbeiten', del: 'Löschen', save: 'Speichern', cancel: 'Abbrechen', summaryLbl: 'Zusammenfassung',
     detailsLbl: 'Details', tagsLbl: 'Tags (durch Komma getrennt)', minutesLbl: 'Minuten',
     deleteConfirm: 'Diesen Eintrag löschen? Das lässt sich nicht rückgängig machen.',
@@ -328,7 +330,10 @@ function entryRow(e) {
     body.append(tags);
   }
   const meta = el('div', 'e-actions small');
-  meta.append(el('span', 'muted', `${e.agent} · ${e.source} · #${e.id}`));
+  // logged much later than the work was done (backfill, import): say so
+  const late = e.created_at && new Date(e.created_at) - new Date(e.ts) > 6 * 3600e3;
+  const when = late ? ` · ${t('backfilled', dayFmt.format(new Date(e.created_at)))}` : '';
+  meta.append(el('span', 'muted', `${e.agent} · ${e.source} · #${e.id}${when}`));
   if (me && me.can_edit) {
     const edit = el('button', 'link', t('edit'));
     edit.type = 'button';

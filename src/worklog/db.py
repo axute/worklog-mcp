@@ -837,6 +837,7 @@ def as_dict(entry: Entry, tz: Any) -> dict[str, Any]:
     return {
         "id": entry.id,
         "ts": entry.ts.astimezone(tz).isoformat(),
+        "created_at": entry.created_at.astimezone(tz).isoformat(),
         "agent": entry.agent,
         "source": entry.source,
         "project": entry.project,
