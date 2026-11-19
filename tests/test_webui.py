@@ -117,7 +117,7 @@ def test_login_flow_and_read_endpoints(server, db, tokens):
         assert c.get("/ui/api/entries", params={"q": "rsync"}).json()["total"] == 1
         assert c.get("/ui/api/entries", params={"since": "2026-11-10", "until": "2026-11-11"}).json()["total"] == 1
         assert c.get("/ui/api/entries", params={"since": "gestern"}).status_code == 400
-        assert c.get("/ui/api/facets").json()["projects"][1] == {"name": "website", "entries": 3}
+        assert c.get("/ui/api/facets").json()["projects"][1] == {"name": "website", "entries": 3, "archived": False, "color": None}
         s = c.get("/ui/api/stats", params={"project": "website"}).json()
         assert s["totals"]["entries"] == 3 and s["totals"]["duration_min"] == 45
 

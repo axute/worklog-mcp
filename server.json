@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.axute/worklog-mcp",
+  "title": "Worklog",
+  "description": "Work log for AI agents: record, search and report finished work, with web view and timesheet.",
+  "repository": {
+    "url": "https://github.com/axute/worklog-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/axute/worklog-mcp#readme",
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/axute/worklog-mcp:1.0.0",
+      "version": "1.0.0",
+      "runtimeHint": "docker",
+      "transport": { "type": "stdio" },
+      "runtimeArguments": [
+        { "type": "named", "name": "-v", "value": "worklog-data:/data", "description": "Named volume that keeps the database between sessions" }
+      ],
+      "packageArguments": [
+        { "type": "positional", "value": "worklog-server" },
+        { "type": "positional", "value": "--stdio" }
+      ],
+      "environmentVariables": [
+        { "name": "WORKLOG_OWNER", "description": "Your user name; all entries belong to this user", "isRequired": true, "format": "string" },
+        { "name": "WORKLOG_AGENT", "description": "Agent name stored with every entry, e.g. claude-desktop", "isRequired": false, "format": "string", "default": "stdio" },
+        { "name": "TZ", "description": "Time zone for dates, e.g. Europe/Berlin", "isRequired": false, "format": "string", "default": "Europe/Berlin" }
+      ]
+    }
+  ]
+}

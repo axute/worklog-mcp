@@ -10,6 +10,10 @@
     POST /ui/api/entries/{id}       change an own entry: project, summary, details, tags, duration_min (write)
     POST /ui/api/entries/{id}/delete                                              (write)
     POST /ui/api/projects/rename    {"from", "to"}: rename, or merge into an existing project (write)
+    POST /ui/api/entries            new entry written by hand: project, summary, details, tags, duration_min, ts (write)
+    GET  /ui/api/projects           projects with totals and details (description, customer, color, archived)
+    POST /ui/api/projects/details   {"name", ...details}                          (write)
+    GET  /ui/api/timesheet          minutes per project and day/week/month: unit, round, format=json|csv, filters
     GET  /ui/api/duplicates         groups of entries that were probably logged twice
     POST /ui/api/duplicates/merge   {"keep": id, "remove": [ids]}                 (write)
     POST /ui/api/duplicates/ignore  {"ids": [ids]}: "not a duplicate", never shown again (write)
@@ -57,7 +61,9 @@ from .auth import (NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_to
 from .config import Settings
 from .db import SCOPES, Database, as_dict
 from .dupes import find_groups
-from .report import read_export, stats, to_csv, to_json, to_markdown
+from .report import (TIMESHEET_UNITS, read_export, stats, timesheet, timesheet_csv, to_csv, to_json,
+                     to_markdown)
+from .times import work_time
 
 log = logging.getLogger("worklog.webui")
 
@@ -235,7 +241,14 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         @mcp.custom_route(f"{prefix}/facets", methods=["GET"], include_in_schema=False)
         async def get_facets(request: Request) -> Response:
             who, err = viewer(request, allow_cookie)
-            return err or _json(db.facets(owner=who.owner))
+            if err:
+                return err
+            f = db.facets(owner=who.owner)
+            details = db.project_details(owner=who.owner)
+            for p in f["projects"]:
+                d = details.get(p["name"], {})
+                p["archived"], p["color"] = bool(d.get("archived")), d.get("color")
+            return _json(f)
 
         @mcp.custom_route(f"{prefix}/stats", methods=["GET"], include_in_schema=False)
         async def get_stats(request: Request) -> Response:
@@ -316,6 +329,80 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return _json({"error": "unknown entry"}, 404)
         log.info("entry_deleted", extra={"entry_id": entry_id, "by": who.owner, "source": "web"})
         return _json({"deleted": entry_id})
+
+    @mcp.custom_route("/ui/api/entries", methods=["POST"], include_in_schema=False)
+    async def new_entry(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        try:
+            body = await json_object(request)
+            allowed = {"project", "summary", "details", "tags", "duration_min", "ts"}
+            if set(body) - allowed:
+                raise ValueError(f"unknown fields: {', '.join(sorted(set(body) - allowed))}")
+            tags, duration = body.get("tags"), body.get("duration_min")
+            if tags is not None and not isinstance(tags, list):
+                raise ValueError("tags must be a list")
+            if duration is not None and (not isinstance(duration, int) or isinstance(duration, bool)):
+                raise ValueError("duration_min must be an integer")
+            ts = body.get("ts")
+            if ts is not None and not isinstance(ts, str):
+                raise ValueError("ts must be an ISO date or datetime")
+            entry = db.add_entry(owner=who.owner, agent=who.agent or "web", source="web",
+                                 project=str(body.get("project") or ""), summary=str(body.get("summary") or ""),
+                                 details=body.get("details") or None, tags=tags, duration_min=duration,
+                                 ts=work_time(ts, tz))
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        log.info("entry_created", extra={"entry_id": entry.id, "by": who.owner, "source": "web"})
+        return _json(as_dict(entry, tz), 201)
+
+    @mcp.custom_route("/ui/api/projects", methods=["GET"], include_in_schema=False)
+    async def projects(request: Request) -> Response:
+        who, err = viewer(request)
+        if err:
+            return err
+        return _json({"projects": [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()}
+                                   for p in db.list_projects(owner=who.owner)]})
+
+    @mcp.custom_route("/ui/api/projects/details", methods=["POST"], include_in_schema=False)
+    async def project_details(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        try:
+            body = await json_object(request)
+            name = str(body.pop("name", "") or "")
+            result = db.set_project_details(owner=who.owner, name=name, **body)
+        except KeyError:
+            return _json({"error": "unknown project"}, 404)
+        except (ValueError, TypeError) as e:
+            return _json({"error": str(e)}, 400)
+        return _json(result)
+
+    @mcp.custom_route("/ui/api/timesheet", methods=["GET"], include_in_schema=False)
+    async def get_timesheet(request: Request) -> Response:
+        who, err = viewer(request)
+        if err:
+            return err
+        p = request.query_params
+        try:
+            f = filters(request)
+            unit = p.get("unit", "week")
+            if unit not in TIMESHEET_UNITS:
+                raise ValueError(f"unit must be one of {', '.join(TIMESHEET_UNITS)}")
+            round_to = int(p.get("round", "0") or 0)
+            entries, _ = db.query_entries(owner=who.owner, **f, limit=None)
+            sheet = timesheet(entries, tz, unit, f["since"], f["until"], round_to)
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        fmt = p.get("format", "json")
+        if fmt == "csv":
+            span = "-".join(x.astimezone(tz).strftime("%Y%m%d") for x in (f["since"], f["until"]) if x) or "all"
+            return PlainTextResponse(timesheet_csv(sheet), media_type="text/csv; charset=utf-8", headers={
+                "Content-Disposition": f'attachment; filename="timesheet-{unit}-{span}.csv"',
+                "Cache-Control": "no-store", **SECURITY_HEADERS})
+        return _json(sheet)
 
     @mcp.custom_route("/ui/api/import", methods=["POST"], include_in_schema=False)
     async def import_json(request: Request) -> Response:

@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# ownership check of the MCP Registry (must match "name" in server.json)
+LABEL io.modelcontextprotocol.server.name="io.github.axute/worklog-mcp"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

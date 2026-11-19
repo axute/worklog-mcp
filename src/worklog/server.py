@@ -165,8 +165,10 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
 
     @mcp.tool(annotations={"title": "List projects", "readOnlyHint": True})
     def list_projects() -> list[dict[str, Any]]:
-        """Known projects with number of entries, total logged minutes and last entry, most recent first.
-        Use the exact project names from here when logging, so entries end up in the same project."""
+        """Known projects with number of entries, total logged minutes, last entry and the user's notes
+        (description, customer, archived), most recent first. Use the exact project names from here when
+        logging, so entries end up in the same project. Archived projects are finished: log to them only
+        if the work clearly belongs there."""
         owner, _ = current_agent("read")
         return [{**p, "last_ts": p["last_ts"].astimezone(tz).isoformat()} for p in db.list_projects(owner=owner)]
 
@@ -205,6 +207,25 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
         language: Annotated[str | None, Field(description="Language of the report, e.g. 'German'.")] = None,
     ) -> str:
         return report_prompt("month", months_ago, project, language)
+
+    @mcp.prompt(name="standup", description="Short stand-up: what I did on the last working day and today so far.")
+    def standup(
+        language: Annotated[str | None, Field(description="Language, e.g. 'German'.")] = None,
+    ) -> str:
+        now = datetime.now(tz)
+        today = now.date()
+        last = today - timedelta(days=3 if today.weekday() == 0 else 2 if today.weekday() == 6 else 1)
+        return (
+            f"Prepare my stand-up. Today is {today:%A, %Y-%m-%d}.\n\n"
+            f"1. Call worklog summarize_period with since='{last}' and until='{today}' (the last working day), "
+            f"and again with since='{today}' and until='{today + timedelta(days=1)}' (today so far).\n"
+            "2. Answer in three short parts, bullet points, results instead of activities:\n"
+            "   - Done (last working day), grouped by project;\n"
+            "   - Today so far;\n"
+            "   - Open / next: only what the entries mention as open, follow-up or blocked – don't make up plans.\n"
+            "Keep it short enough to read out in a minute. If there are no entries, say so.\n"
+            f"Language: {language or 'the language I write in'}."
+        )
 
     @mcp.prompt(name="backfill_project",
                 description="Log the history of an earlier project afterwards, with the real dates.")

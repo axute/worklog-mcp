@@ -27,6 +27,8 @@
     <nav class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-entries" data-tab="entries" data-t="entries"></button>
       <button type="button" role="tab" id="tab-overview" data-tab="overview" data-t="overview"></button>
+      <button type="button" role="tab" id="tab-timesheet" data-tab="timesheet" data-t="timesheet"></button>
+      <button type="button" role="tab" id="tab-projects" data-tab="projects" data-t="projectsTab"></button>
       <button type="button" role="tab" id="tab-tokens" data-tab="tokens" data-t="tokens" hidden></button>
     </nav>
     <span class="who"><span id="who" class="muted"></span>
@@ -55,6 +57,7 @@
     </span>
     <button type="button" id="f-reset" class="link" data-t="reset" hidden></button>
     <button type="button" id="f-rename" class="link" data-t="renameProject" hidden></button>
+    <button type="button" id="new-entry" class="primary new-entry" data-t="newEntry" hidden></button>
   </section>
 
   <div class="status-row">
@@ -71,6 +74,7 @@
   <datalist id="project-names"></datalist>
 
   <main id="view-entries">
+    <form id="new-entry-form" class="card e-form new-entry-form" hidden></form>
     <p id="dupes-hint" class="dupes-hint" hidden>
       <span id="dupes-text"></span>
       <button type="button" id="dupes-toggle" class="link"></button>
@@ -95,12 +99,56 @@
     </section>
 
     <section class="card">
+      <div class="card-head">
+        <h2 data-t="activity"></h2>
+        <span id="heat-legend" class="heat-legend heatmap small muted"></span>
+      </div>
+      <div id="heatmap" class="heatmap"></div>
+    </section>
+
+    <section class="card">
       <div class="card-head"><h2 id="timeline-title"></h2></div>
       <div id="timeline" class="timeline"></div>
       <details class="table-view">
         <summary data-t="asTable"></summary>
         <div class="table-wrap"><table id="timeline-table"></table></div>
       </details>
+    </section>
+  </main>
+
+  <main id="view-timesheet" hidden>
+    <section class="card">
+      <div class="card-head">
+        <div class="seg" role="group" data-ta="unit">
+          <button type="button" data-unit="auto" data-t="unitAuto"></button>
+          <button type="button" data-unit="day" data-t="unitDay"></button>
+          <button type="button" data-unit="week" data-t="unitWeek"></button>
+          <button type="button" data-unit="month" data-t="unitMonth"></button>
+        </div>
+        <span class="ts-tools small">
+          <label><span data-t="rounding"></span>
+            <select id="ts-round">
+              <option value="0" data-t="roundNone"></option>
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="60">60 min</option>
+            </select>
+          </label>
+          <a id="ts-csv" download>CSV</a>
+        </span>
+      </div>
+      <div class="table-wrap ts-wrap"><table id="ts-table" class="ts"></table></div>
+      <p class="muted small" data-t="tsHint"></p>
+    </section>
+  </main>
+
+  <main id="view-projects" hidden>
+    <section class="card">
+      <div class="card-head">
+        <h2 data-t="projectsTab"></h2>
+        <label class="small"><input type="checkbox" id="pr-archived"> <span data-t="showArchived"></span></label>
+      </div>
+      <div class="table-wrap pr-wrap"><table id="pr-table" class="pr"></table></div>
     </section>
   </main>
 

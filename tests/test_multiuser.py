@@ -93,7 +93,7 @@ def test_rest_api_is_per_user(server, db, two):
     assert httpx.post(server + "/api/entries/bulk", json=bulk, headers=bearer(two["bob"])).json()["created"] == 1
     bob = httpx.get(server + "/api/entries", headers=bearer(two["bob"])).json()
     assert [e["summary"] for e in bob["entries"]] == ["Bob Import"]
-    assert httpx.get(server + "/api/facets", headers=bearer(two["bob"])).json()["projects"] == [{"name": "p", "entries": 1}]
+    assert httpx.get(server + "/api/facets", headers=bearer(two["bob"])).json()["projects"] == [{"name": "p", "entries": 1, "archived": False, "color": None}]
     assert httpx.get(server + "/api/stats", headers=bearer(two["alice"])).json()["totals"]["entries"] == 1
 
 
@@ -104,7 +104,7 @@ def test_web_view_is_per_user(proxy, db, two):
         assert [e["summary"] for e in c.get("/ui/api/entries").json()["entries"]] == ["Bobs Notiz"]
         assert c.get("/ui/api/entries", params={"q": "Alices"}).json()["total"] == 0
         assert c.get("/ui/api/entries", params={"project": "geheim"}).json()["total"] == 0
-        assert c.get("/ui/api/facets").json()["projects"] == [{"name": "garten", "entries": 1}]
+        assert c.get("/ui/api/facets").json()["projects"] == [{"name": "garten", "entries": 1, "archived": False, "color": None}]
         assert c.get("/ui/api/stats").json()["totals"]["entries"] == 1
         # tokens: only bob's own; alice's token of the same name is out of reach
         assert [t["name"] for t in c.get("/ui/api/tokens").json()["tokens"]] == ["laptop"]

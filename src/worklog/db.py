@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SUMMARY_MAX = 300
-SOURCES = ("tool", "hook", "import")
+SOURCES = ("tool", "hook", "import", "web")
 SCOPES = ("read", "write")
 
 # Each migration runs once, in order; PRAGMA user_version records the last one.
@@ -91,6 +91,61 @@ MIGRATIONS: list[str] = [
         b          INTEGER NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (owner, a, b)
+    );
+    """,
+    # 6: source 'web' (entries written in the web view) and per-user project details
+    """
+    DROP TRIGGER IF EXISTS entries_ai;
+    DROP TRIGGER IF EXISTS entries_ad;
+    DROP TRIGGER IF EXISTS entries_au;
+    CREATE TABLE entries_new (
+        id           INTEGER PRIMARY KEY,
+        owner        TEXT NOT NULL,
+        ts           TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        agent        TEXT NOT NULL,
+        source       TEXT NOT NULL CHECK (source IN ('tool', 'hook', 'import', 'web')),
+        project      TEXT NOT NULL,
+        summary      TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND 300),
+        details      TEXT,
+        tags         TEXT,
+        duration_min INTEGER CHECK (duration_min IS NULL OR duration_min >= 0),
+        session_id   TEXT,
+        external_id  TEXT,
+        UNIQUE (owner, external_id)
+    );
+    INSERT INTO entries_new SELECT id, owner, ts, created_at, agent, source, project, summary, details, tags,
+                                   duration_min, session_id, external_id FROM entries;
+    DROP TABLE entries;
+    ALTER TABLE entries_new RENAME TO entries;
+    CREATE INDEX entries_owner_ts      ON entries (owner, ts DESC);
+    CREATE INDEX entries_owner_project ON entries (owner, project, ts DESC);
+    CREATE INDEX entries_owner_agent   ON entries (owner, agent, ts DESC);
+    CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts (rowid, summary, details, project, tags)
+        VALUES (new.id, new.summary, new.details, new.project, new.tags);
+    END;
+    CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts (entries_fts, rowid, summary, details, project, tags)
+        VALUES ('delete', old.id, old.summary, old.details, old.project, old.tags);
+    END;
+    CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts (entries_fts, rowid, summary, details, project, tags)
+        VALUES ('delete', old.id, old.summary, old.details, old.project, old.tags);
+        INSERT INTO entries_fts (rowid, summary, details, project, tags)
+        VALUES (new.id, new.summary, new.details, new.project, new.tags);
+    END;
+    INSERT INTO entries_fts (entries_fts) VALUES ('rebuild');
+
+    CREATE TABLE projects (
+        owner       TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        description TEXT,
+        customer    TEXT,
+        color       TEXT,
+        archived    INTEGER NOT NULL DEFAULT 0,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (owner, name)
     );
     """,
 ]
@@ -502,9 +557,15 @@ class Database:
             raise ValueError("new project name must not be empty")
         if new == old:
             return 0
+        owner = clean_owner(owner)
         with self._lock:
             cur = self._conn.execute("UPDATE entries SET project = ? WHERE owner = ? AND project = ?",
-                                     (new, clean_owner(owner), old))
+                                     (new, owner, old))
+            if cur.rowcount:
+                # details move along; when merging into a project that has its own, those win
+                self._conn.execute("UPDATE OR IGNORE projects SET name = ? WHERE owner = ? AND name = ?",
+                                   (new, owner, old))
+                self._conn.execute("DELETE FROM projects WHERE owner = ? AND name = ?", (owner, old))
         if cur.rowcount == 0:
             raise KeyError(old)
         return cur.rowcount
@@ -628,14 +689,70 @@ class Database:
             rows = self._conn.execute(sql, args).fetchall()
         return [Entry.from_row(r) for r in rows]
 
-    def list_projects(self, *, owner: str) -> list[dict[str, Any]]:
+    def list_projects(self, *, owner: str, include_archived: bool = True) -> list[dict[str, Any]]:
+        """Projects with entries, most recent first, with their details (description, customer,
+        color, archived)."""
+        owner = clean_owner(owner)
         with self._lock:
             rows = self._conn.execute(
                 "SELECT project, COUNT(*) AS n, MAX(ts) AS last_ts, SUM(duration_min) AS minutes "
-                "FROM entries WHERE owner = ? GROUP BY project ORDER BY last_ts DESC", (clean_owner(owner),)
+                "FROM entries WHERE owner = ? GROUP BY project ORDER BY last_ts DESC", (owner,)
             ).fetchall()
-        return [{"project": r["project"], "entries": r["n"], "last_ts": from_db_ts(r["last_ts"]),
-                 "duration_min": r["minutes"] or 0} for r in rows]
+        meta = self.project_details(owner=owner)
+        out = []
+        for r in rows:
+            m = meta.get(r["project"], {})
+            if m.get("archived") and not include_archived:
+                continue
+            out.append({"project": r["project"], "entries": r["n"], "last_ts": from_db_ts(r["last_ts"]),
+                        "duration_min": r["minutes"] or 0, "description": m.get("description"),
+                        "customer": m.get("customer"), "color": m.get("color"), "archived": bool(m.get("archived"))})
+        return out
+
+    def project_details(self, *, owner: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM projects WHERE owner = ?", (clean_owner(owner),)).fetchall()
+        return {r["name"]: {"description": r["description"], "customer": r["customer"], "color": r["color"],
+                            "archived": bool(r["archived"])} for r in rows}
+
+    def set_project_details(self, *, owner: str, name: str, **fields: Any) -> dict[str, Any]:
+        """Change description, customer, color (#rrggbb) or archived of a project with entries."""
+        owner = clean_owner(owner)
+        unknown = set(fields) - {"description", "customer", "color", "archived"}
+        if unknown:
+            raise ValueError(f"cannot change: {', '.join(sorted(unknown))}")
+        current = self.project_details(owner=owner).get(name, {})
+        values = {"description": current.get("description"), "customer": current.get("customer"),
+                  "color": current.get("color"), "archived": current.get("archived", False)}
+        for key in ("description", "customer"):
+            if key in fields:
+                v = fields[key]
+                v = str(v).strip() if v is not None else ""
+                if len(v) > (1000 if key == "description" else 100):
+                    raise ValueError(f"{key} is too long")
+                values[key] = v or None
+        if "color" in fields:
+            c = (fields["color"] or "").strip().lower() or None
+            if c is not None and not re.fullmatch(r"#[0-9a-f]{6}", c):
+                raise ValueError("color must look like #3987e5")
+            values["color"] = c
+        if "archived" in fields:
+            if not isinstance(fields["archived"], bool):
+                raise ValueError("archived must be true or false")
+            values["archived"] = fields["archived"]
+        with self._lock:
+            if not self._conn.execute("SELECT 1 FROM entries WHERE owner = ? AND project = ? LIMIT 1",
+                                      (owner, name)).fetchone():
+                raise KeyError(name)
+            self._conn.execute(
+                """INSERT INTO projects (owner, name, description, customer, color, archived, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (owner, name) DO UPDATE SET description = excluded.description,
+                       customer = excluded.customer, color = excluded.color, archived = excluded.archived,
+                       updated_at = excluded.updated_at""",
+                (owner, name, values["description"], values["customer"], values["color"],
+                 int(values["archived"]), to_db_ts(utcnow())))
+        return {"project": name, **values}
 
     def import_entries(self, owner: str, agent: str, items: list[dict[str, Any]], *,
                        update: bool = False) -> dict[str, Any]:

@@ -10,7 +10,7 @@
 
 services:
   worklog:
-    # published image (amd64/arm64); pin a version like :0.1 once released
+    # published image (amd64/arm64); pin a major version like :1 to get fixes but no breaking changes
     image: ghcr.io/axute/worklog-mcp:latest
     # to build from this checkout instead, replace the line above with:
     # build: ${WORKLOG_SRC:-.}

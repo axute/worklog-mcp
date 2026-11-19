@@ -60,6 +60,7 @@ jobs:
             org.opencontainers.image.title=worklog-mcp
             org.opencontainers.image.description=MCP server that collects work log entries from AI agents
             org.opencontainers.image.licenses=MIT
+            io.modelcontextprotocol.server.name=io.github.axute/worklog-mcp
       - uses: docker/build-push-action@v7
         with:
           context: .

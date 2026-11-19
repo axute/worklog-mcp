@@ -6,6 +6,9 @@
     worklog import --owner USER [--update] FILE|-          (JSON export from the web view or `export --format json`)
     worklog export --owner USER [--format md|csv|json] [--since DATE] [--until DATE] [--project P] [--output FILE]
     worklog report --owner USER [--period last-week|this-week|last-month|this-month] [--project P] [--dir DIR]
+                   [--notify] [--notify-url URL ...]
+    worklog notify-test [--notify-url URL ...]
+    worklog demo-data --owner USER [--days 120]            (made-up entries to try the web view)
     worklog backup [--dir DIR] [--keep 14]
 
 Every entry and token belongs to a user (the owner). With sign-in through a
@@ -23,6 +26,7 @@ from pathlib import Path
 from .auth import create_token
 from .config import Settings
 from .db import Database, utcnow
+from .notify import notify_urls, report_message, send
 from .report import PERIODS, period_bounds, read_export, summary_line, to_csv, to_json, to_markdown
 
 
@@ -73,6 +77,17 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--project")
     rp.add_argument("--dir", help="write worklog-<owner>-<period>.md there and print a one-line summary "
                                   "(for notifications); default: Markdown to stdout")
+    rp.add_argument("--notify", action="store_true",
+                    help="also send a short summary to the Apprise targets in $WORKLOG_NOTIFY (and --notify-url)")
+    rp.add_argument("--notify-url", action="append", default=[], metavar="URL",
+                    help="Apprise target, e.g. ntfy://my-topic; may be repeated; implies --notify")
+
+    dm = sub.add_parser("demo-data", help="add made-up example entries for a user (to try the web view)")
+    dm.add_argument("--owner", required=True, help="use a separate user, e.g. demo: the entries are fictional")
+    dm.add_argument("--days", type=int, default=120)
+
+    nt = sub.add_parser("notify-test", help="send a test message to the Apprise targets")
+    nt.add_argument("--notify-url", action="append", default=[], metavar="URL")
 
     bk = sub.add_parser("backup", help="consistent copy of the database; keeps the newest N")
     bk.add_argument("--dir", help="target directory (default: backups/ next to the database)")
@@ -149,6 +164,28 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 sys.stdout.write(text)
                 print(line, file=sys.stderr)
+            if args.notify or args.notify_url:
+                urls = notify_urls(args.notify_url)
+                if not urls:
+                    raise ValueError("no notification targets: set WORKLOG_NOTIFY or use --notify-url")
+                title, body = report_message(entries, label, args.project)
+                sent, failed = send(urls, title, body)
+                print(f"notifications: {sent} sent, {failed} failed", file=sys.stderr)
+                if failed:
+                    return 1
+        elif args.command == "demo-data":
+            from .demo import create_demo_data
+            if db.list_entries(owner=args.owner, limit=1):
+                raise ValueError(f"user '{args.owner}' already has entries; demo data goes to an empty user")
+            print(f"{create_demo_data(db, args.owner, args.days)} made-up entries created for '{args.owner}'")
+        elif args.command == "notify-test":
+            urls = notify_urls(args.notify_url)
+            if not urls:
+                raise ValueError("no notification targets: set WORKLOG_NOTIFY or use --notify-url")
+            sent, failed = send(urls, "Worklog test", "If you can read this, notifications work.")
+            print(f"{sent} sent, {failed} failed")
+            if failed:
+                return 1
         elif args.command == "backup":
             if args.keep < 1:
                 raise ValueError("--keep must be at least 1")

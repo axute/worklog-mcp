@@ -30,6 +30,13 @@ const TEXT = {
     showDupes: 'Review', hideDupes: 'Hide', similar: 'similar ({0} %)', keepThis: 'Keep the selected one and merge',
     notDupe: 'Not a duplicate', mergeHelp: 'Details and tags are combined, the longest duration counts once, the others are deleted.',
     backfilled: 'logged afterwards on {0}', importJson: 'Import',
+    timesheet: 'Hours', projectsTab: 'Projects', newEntry: '+ Entry', newEntryTitle: 'New entry', whenLbl: 'When',
+    activity: 'Activity', less: 'less', moreLegend: 'more', unitAuto: 'Auto', unitDay: 'Day', unitWeek: 'Week',
+    unitMonth: 'Month', rounding: 'Round up to', roundNone: 'exact', total: 'Total', week: 'Week {0}',
+    tsHint: 'Uses the filters above. Rounding applies to every cell, so totals are the sum of rounded cells.',
+    showArchived: 'Show archived', archived: 'archived', descriptionLbl: 'Description', customerLbl: 'Customer',
+    colorLbl: 'Color', noColor: 'no color', archiveLbl: 'Archived (finished, hidden from lists)', lastLbl: 'Last entry',
+    noProjects: 'No projects yet.',
     imported: 'Import: {0} new, {1} already there, {2} errors.', importFailed: 'Import failed: {0}',
     edit: 'Edit', del: 'Delete', save: 'Save', cancel: 'Cancel', summaryLbl: 'Summary', detailsLbl: 'Details',
     tagsLbl: 'Tags (comma separated)', minutesLbl: 'Minutes', deleteConfirm: 'Delete this entry? This cannot be undone.',
@@ -63,6 +70,13 @@ const TEXT = {
     keepThis: 'Ausgewählten behalten und zusammenführen', notDupe: 'Kein Duplikat',
     mergeHelp: 'Details und Tags werden zusammengelegt, die längste Dauer zählt einmal, die anderen werden gelöscht.',
     backfilled: 'nachgetragen am {0}', importJson: 'Import',
+    timesheet: 'Stunden', projectsTab: 'Projekte', newEntry: '+ Eintrag', newEntryTitle: 'Neuer Eintrag', whenLbl: 'Wann',
+    activity: 'Aktivität', less: 'weniger', moreLegend: 'mehr', unitAuto: 'Auto', unitDay: 'Tag', unitWeek: 'Woche',
+    unitMonth: 'Monat', rounding: 'Aufrunden auf', roundNone: 'exakt', total: 'Summe', week: 'KW {0}',
+    tsHint: 'Nutzt die Filter oben. Gerundet wird jede Zelle, die Summen sind die Summe der gerundeten Zellen.',
+    showArchived: 'Archivierte anzeigen', archived: 'archiviert', descriptionLbl: 'Beschreibung', customerLbl: 'Kunde',
+    colorLbl: 'Farbe', noColor: 'keine Farbe', archiveLbl: 'Archiviert (abgeschlossen, aus Listen ausgeblendet)',
+    lastLbl: 'Letzter Eintrag', noProjects: 'Noch keine Projekte.',
     imported: 'Import: {0} neu, {1} schon vorhanden, {2} Fehler.', importFailed: 'Import fehlgeschlagen: {0}',
     edit: 'Bearbeiten', del: 'Löschen', save: 'Speichern', cancel: 'Abbrechen', summaryLbl: 'Zusammenfassung',
     detailsLbl: 'Details', tagsLbl: 'Tags (durch Komma getrennt)', minutesLbl: 'Minuten',
@@ -113,7 +127,8 @@ const monthLongFmt = new Intl.DateTimeFormat(lang, { month: 'long', year: 'numer
 
 // ---------------------------------------------------------------- state
 
-const DEFAULTS = { tab: 'entries', q: '', project: '', agent: '', source: '', range: 'all', since: '', until: '', metric: 'time' };
+const DEFAULTS = { tab: 'entries', q: '', project: '', agent: '', source: '', range: 'all', since: '', until: '', metric: 'time',
+                   unit: 'auto', round: '0' };
 const RANGES = ['all', 'today', '7d', '30d', 'month', 'year', 'custom'];
 const PAGE = 50;
 const state = { ...DEFAULTS };
@@ -126,7 +141,7 @@ let me = null;           // { user, agent, via, manage_tokens, can_edit, logout_
 let facets = null;       // last /api/facets answer
 let dupes = [];          // groups of likely duplicates
 let dupesOpen = false;
-const TABS = () => (me && me.manage_tokens ? ['entries', 'overview', 'tokens'] : ['entries', 'overview']);
+const TABS = () => ['entries', 'overview', 'timesheet', 'projects', ...(me && me.manage_tokens ? ['tokens'] : [])];
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -134,6 +149,8 @@ function readHash() {
   if (!TABS().includes(state.tab)) state.tab = 'entries';
   if (!RANGES.includes(state.range)) state.range = 'all';
   if (!['time', 'entries'].includes(state.metric)) state.metric = 'time';
+  if (!['auto', 'day', 'week', 'month'].includes(state.unit)) state.unit = 'auto';
+  if (!['0', '15', '30', '60'].includes(state.round)) state.round = '0';
 }
 function writeHash() {
   const p = new URLSearchParams();
@@ -247,9 +264,15 @@ function syncControls() {
   $('view-entries').hidden = state.tab !== 'entries';
   $('view-overview').hidden = state.tab !== 'overview';
   $('view-tokens').hidden = state.tab !== 'tokens';
-  $('filters').hidden = state.tab === 'tokens';
-  $('f-rename').hidden = !(me && me.can_edit && state.project && state.tab !== 'tokens');
-  $('export').hidden = state.tab === 'tokens';
+  $('view-timesheet').hidden = state.tab !== 'timesheet';
+  $('view-projects').hidden = state.tab !== 'projects';
+  $('filters').hidden = ['tokens', 'projects'].includes(state.tab);
+  $('f-rename').hidden = !(me && me.can_edit && state.project && ['entries', 'overview', 'timesheet'].includes(state.tab));
+  $('new-entry').hidden = !(me && me.can_edit && state.tab === 'entries');
+  if (state.tab !== 'entries') $('new-entry-form').hidden = true;
+  $('export').hidden = state.tab !== 'entries' && state.tab !== 'overview';
+  for (const b of document.querySelectorAll('[data-unit]')) b.setAttribute('aria-pressed', String(b.dataset.unit === state.unit));
+  $('ts-round').value = state.round;
   const q = new URLSearchParams(Object.entries(filterParams()).filter(([, v]) => v !== '' && v != null));
   $('export-md').href = `api/export?${q}&format=md`;
   $('export-csv').href = `api/export?${q}&format=csv`;
@@ -275,6 +298,8 @@ function setFilter(key, value) {
 function refresh() {
   if (state.tab === 'entries') loadEntries(true);
   else if (state.tab === 'overview') loadOverview();
+  else if (state.tab === 'timesheet') loadTimesheet();
+  else if (state.tab === 'projects') loadProjectList();
   else loadTokens();
 }
 async function loadEntries(reset) {
@@ -350,6 +375,265 @@ function entryRow(e) {
   body.append(meta);
   d.append(s, body);
   return d;
+}
+
+// ---------------------------------------------------------------- activity heatmap (overview)
+
+const HEAT_DAYS = ['Mo', '', 'Mi', '', 'Fr', '', ''];
+function heatLevel(v, byTime) {
+  if (!v) return 0;
+  const steps = byTime ? [30, 90, 180] : [1, 3, 6];   // minutes, or entries per day
+  return v <= steps[0] ? 1 : v <= steps[1] ? 2 : v <= steps[2] ? 3 : 4;
+}
+function renderHeatmap() {
+  const box = $('heatmap');
+  box.textContent = '';
+  const byTime = state.metric === 'time';
+  const values = new Map(overview.days.map((d) => [d.date, d]));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const [since, until] = rangeDates();
+  let end = until ? addDays(parseDate(until), -1) : today;
+  let start = since ? parseDate(since) : addDays(end, -364);
+  if ((end - start) / 864e5 > 370) start = addDays(end, -364);   // at most about a year
+  start = addDays(start, -((start.getDay() + 6) % 7));            // Monday
+  const weeks = Math.max(1, Math.ceil(((end - start) / 864e5 + 1) / 7));
+  const cell = 13, gap = 3, left = 22, top = 16;
+  const W = left + weeks * (cell + gap), H = top + 7 * (cell + gap);
+  const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': t('activity') });
+  HEAT_DAYS.forEach((d, i) => {
+    if (!d) return;
+    const label = svg('text', { x: 0, y: top + i * (cell + gap) + cell - 2 });
+    label.textContent = lang === 'de' ? d : ['Mon', '', 'Wed', '', 'Fri'][i];
+    root.append(label);
+  });
+  let lastMonth = -1;
+  for (let w = 0; w < weeks; w++) {
+    for (let d = 0; d < 7; d++) {
+      const day = addDays(start, w * 7 + d);
+      if (day > end) continue;
+      if (d === 0 && day.getMonth() !== lastMonth && day.getDate() <= 7) {
+        lastMonth = day.getMonth();
+        const m = svg('text', { x: left + w * (cell + gap), y: 10 });
+        m.textContent = monthFmt.format(day).split(' ')[0];
+        root.append(m);
+      }
+      const v = values.get(iso(day));
+      const amount = v ? (byTime ? v.duration_min : v.entries) : 0;
+      const r = svg('rect', { class: `day h${heatLevel(amount, byTime)}`, x: left + w * (cell + gap), y: top + d * (cell + gap),
+        width: cell, height: cell, rx: 2 });
+      const text = `${dayFmt.format(day)}\n${v ? `${fmtDur(v.duration_min) || '0 min'} · ${v.entries === 1 ? t('oneEntry') : t('nEntries', num(v.entries))}` : '–'}`;
+      r.addEventListener('pointermove', (ev) => showTip(text, ev.clientX, ev.clientY));
+      r.addEventListener('pointerleave', hideTip);
+      r.addEventListener('click', () => {
+        hideTip();
+        Object.assign(state, { tab: 'entries', range: 'custom', since: iso(day), until: iso(day) });
+        changed();
+      });
+      root.append(r);
+    }
+  }
+  box.append(root);
+  const legend = $('heat-legend');
+  legend.textContent = '';
+  const l = svg('svg', { width: 5 * 14, height: 11 });
+  for (let i = 0; i < 5; i++) l.append(svg('rect', { class: `h${i}`, x: i * 14, y: 0, width: 11, height: 11, rx: 2 }));
+  legend.append(el('span', null, t('less')), l, el('span', null, t('moreLegend')));
+}
+
+// ---------------------------------------------------------------- timesheet
+
+function autoUnit() {
+  const [since, until] = rangeDates();
+  if (!since || !until) return 'month';
+  const span = (parseDate(until) - parseDate(since)) / 864e5;
+  return span <= 31 ? 'day' : span <= 190 ? 'week' : 'month';
+}
+const fmtHM = (m) => (m ? `${Math.floor(m / 60)}:${pad(m % 60)}` : '');
+const shortDayFmt = new Intl.DateTimeFormat(lang, { weekday: 'short', day: '2-digit', month: '2-digit' });
+function tsLabel(c, unit) {
+  if (unit === 'day') return shortDayFmt.format(parseDate(c.start));
+  if (unit === 'week') return t('week', Number(c.key.split('-W')[1]));
+  const [y, m] = c.key.split('-').map(Number);
+  return monthFmt.format(new Date(y, m - 1, 1));
+}
+async function loadTimesheet() {
+  const my = ++seq;
+  const unit = state.unit === 'auto' ? autoUnit() : state.unit;
+  const params = { ...filterParams(), unit, round: state.round };
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null));
+  $('ts-csv').href = `api/timesheet?${q}&format=csv`;
+  $('status').textContent = t('loading');
+  try {
+    const sheet = await api('api/timesheet', params);
+    if (my !== seq) return;
+    renderTimesheet(sheet);
+  } catch (e) {
+    if (my === seq && e.message !== '401') $('status').textContent = t('error', e.message);
+  }
+}
+function renderTimesheet(sheet) {
+  $('status').textContent = `${t('total')}: ${fmtHM(sheet.total) || '0:00'} h`;
+  const table = $('ts-table');
+  table.textContent = '';
+  const head = table.createTHead().insertRow();
+  head.append(el('th', null, t('project')));
+  for (const c of sheet.columns) {
+    const th = el('th', 'num', tsLabel(c, sheet.unit));
+    th.title = c.start;
+    head.append(th);
+  }
+  head.append(el('th', 'num total', t('total')));
+  const body = table.createTBody();
+  for (const r of sheet.rows) {
+    const tr = body.insertRow();
+    const name = el('td');
+    const color = facets && facets.projects.find((p) => p.name === r.project)?.color;
+    const dot = el('span', 'dot');
+    if (color) dot.style.background = color;
+    name.append(dot, document.createTextNode(r.project));
+    name.title = r.project;
+    tr.append(name);
+    for (const m of r.minutes) tr.append(el('td', m ? 'num' : 'num zero', fmtHM(m) || '·'));
+    tr.append(el('td', 'num total', fmtHM(r.total) || '0:00'));
+  }
+  if (!sheet.rows.length) body.insertRow().append(el('td', 'muted', t('none')));
+  const foot = table.createTFoot().insertRow();
+  foot.append(el('td', null, t('total')));
+  for (const m of sheet.totals) foot.append(el('td', 'num', fmtHM(m)));
+  foot.append(el('td', 'num total', fmtHM(sheet.total) || '0:00'));
+}
+
+// ---------------------------------------------------------------- projects
+
+let projectList = [];
+async function loadProjectList() {
+  const my = ++seq;
+  $('status').textContent = t('loading');
+  try {
+    const data = await api('api/projects');
+    if (my !== seq) return;
+    projectList = data.projects;
+    $('status').textContent = '';
+    renderProjectList();
+  } catch (e) {
+    if (my === seq && e.message !== '401') $('status').textContent = t('error', e.message);
+  }
+}
+function renderProjectList() {
+  const table = $('pr-table');
+  table.textContent = '';
+  const head = table.createTHead().insertRow();
+  for (const [k, cls] of [['project', ''], ['descriptionLbl', ''], ['customerLbl', ''], ['tEntries', 'num'],
+                          ['tTime', 'num'], ['lastLbl', ''], ['', '']]) head.append(el('th', cls, k ? t(k) : ''));
+  const body = table.createTBody();
+  const rows = projectList.filter((p) => $('pr-archived').checked || !p.archived);
+  for (const p of rows) body.append(projectRow(p));
+  if (!rows.length) body.insertRow().append(el('td', 'muted', t('noProjects')));
+}
+function projectRow(p) {
+  const tr = el('tr', p.archived ? 'archived' : null);
+  const name = el('td');
+  const dot = el('span', 'dot');
+  if (p.color) dot.style.background = p.color;
+  const link = el('button', 'link', p.project);
+  link.type = 'button';
+  link.addEventListener('click', () => { state.tab = 'entries'; setFilter('project', p.project); });
+  name.append(dot, link);
+  if (p.archived) name.append(el('span', 'badge', t('archived')));
+  const actions = el('td', 'actions');
+  if (me && me.can_edit) {
+    const edit = el('button', 'link', t('edit'));
+    edit.type = 'button';
+    edit.addEventListener('click', () => tr.replaceWith(projectForm(p)));
+    actions.append(edit);
+  }
+  tr.append(name, el('td', null, p.description || ''), el('td', null, p.customer || ''),
+    el('td', 'num', num(p.entries)), el('td', 'num', fmtDur(p.duration_min) || '–'),
+    el('td', null, dayFmt.format(new Date(p.last_ts))), actions);
+  return tr;
+}
+function projectForm(p) {
+  const tr = el('tr');
+  const td = el('td');
+  td.colSpan = 7;
+  const form = el('form', 'pr-form');
+  const desc = el('textarea'); desc.value = p.description || '';
+  const customer = el('input'); customer.value = p.customer || '';
+  const color = el('input'); color.type = 'color'; color.value = p.color || '#3987e5';
+  const none = el('input'); none.type = 'checkbox'; none.checked = !p.color;
+  const noneLabel = el('label', 'inline'); noneLabel.append(none, el('span', null, t('noColor')));
+  const colorBox = el('div', 'inline'); colorBox.append(color, noneLabel);
+  const archived = el('input'); archived.type = 'checkbox'; archived.checked = p.archived;
+  const archLabel = el('label', 'inline wide'); archLabel.append(archived, el('span', null, t('archiveLbl')));
+  const error = el('p', 'error');
+  const save = el('button', 'primary', t('save')); save.type = 'submit';
+  const cancel = el('button', 'link', t('cancel')); cancel.type = 'button';
+  cancel.addEventListener('click', () => tr.replaceWith(projectRow(p)));
+  const buttons = el('div', 'buttons'); buttons.append(save, cancel);
+  const colorField = el('div', 'field');   // not a <label>: it holds its own label for the checkbox
+  colorField.append(el('span', null, t('colorLbl')), colorBox);
+  form.append(el('strong', 'wide', p.project), field(t('descriptionLbl'), desc, true), field(t('customerLbl'), customer),
+              colorField, archLabel, buttons, error);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await apiPost('api/projects/details', { name: p.project, description: desc.value, customer: customer.value,
+        color: none.checked ? null : color.value, archived: archived.checked });
+      Object.assign(p, r);
+      tr.replaceWith(projectRow(p));
+      loadFacets();
+    } catch (err) {
+      if (err.message !== '401') error.textContent = err.message;
+    }
+  });
+  td.append(form);
+  tr.append(td);
+  return tr;
+}
+
+// ---------------------------------------------------------------- new entry by hand
+
+function localNow() {
+  const d = new Date();
+  return `${iso(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function openNewEntry() {
+  const form = $('new-entry-form');
+  form.textContent = '';
+  const project = el('input'); project.required = true; project.setAttribute('list', 'project-names');
+  project.value = state.project || '';
+  const when = el('input'); when.type = 'datetime-local'; when.value = localNow(); when.max = localNow();
+  const minutes = el('input'); minutes.type = 'number'; minutes.min = '0';
+  const summary = el('input'); summary.required = true; summary.maxLength = 300;
+  const text = el('textarea');
+  const tags = el('input');
+  const error = el('p', 'error');
+  const save = el('button', 'primary', t('save')); save.type = 'submit';
+  const cancel = el('button', 'link', t('cancel')); cancel.type = 'button';
+  cancel.addEventListener('click', () => { form.hidden = true; });
+  const buttons = el('div', 'buttons'); buttons.append(save, cancel);
+  form.append(el('h2', null, t('newEntryTitle')), field(t('project'), project), field(t('whenLbl'), when),
+              field(t('minutesLbl'), minutes), field(t('summaryLbl'), summary, true), field(t('detailsLbl'), text, true),
+              field(t('tagsLbl'), tags, true), buttons, error);
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    error.textContent = '';
+    try {
+      await apiPost('api/entries', {
+        project: project.value.trim(), summary: summary.value.trim(), details: text.value || null,
+        tags: tags.value.split(',').map((x) => x.trim()).filter(Boolean),
+        duration_min: minutes.value === '' ? null : Number(minutes.value), ts: when.value || null,
+      });
+      form.hidden = true;
+      await loadFacets();
+      refresh();
+      loadDupes();
+    } catch (err) {
+      if (err.message !== '401') error.textContent = err.message;
+    }
+  };
+  form.hidden = false;
+  (project.value ? summary : project).focus();
 }
 
 // ---------------------------------------------------------------- JSON import (proxy sign-in)
@@ -546,6 +830,7 @@ function renderOverview() {
     tiles.append(tile);
   }
   renderProjects();
+  renderHeatmap();
   renderTimeline();
 }
 function renderProjects() {
@@ -827,7 +1112,7 @@ function init() {
       state.metric = b.dataset.metric;
       writeHash();
       syncControls();
-      if (overview) { renderProjects(); renderTimeline(); }
+      if (overview) { renderProjects(); renderHeatmap(); renderTimeline(); }
     });
   }
   $('more').addEventListener('click', () => loadEntries(false));
@@ -841,6 +1126,12 @@ function init() {
   $('token-form').addEventListener('submit', onCreateToken);
   $('f-rename').addEventListener('click', renameProject);
   $('import-btn').addEventListener('click', () => $('import-file').click());
+  $('new-entry').addEventListener('click', openNewEntry);
+  $('pr-archived').addEventListener('change', renderProjectList);
+  $('ts-round').addEventListener('change', () => { state.round = $('ts-round').value; changed(); });
+  for (const b of document.querySelectorAll('[data-unit]')) {
+    b.addEventListener('click', () => { state.unit = b.dataset.unit; changed(); });
+  }
   $('import-file').addEventListener('change', importFile);
   $('dupes-toggle').addEventListener('click', () => { dupesOpen = !dupesOpen; renderDupes(); });
   $('token-copy').addEventListener('click', copyToken);
