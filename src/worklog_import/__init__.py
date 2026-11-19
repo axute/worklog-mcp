@@ -6,4 +6,4 @@ summarize (claude -p or a simple heuristic) -> preview -> upload in bulk.
 Only finished summaries are uploaded, never raw transcripts.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

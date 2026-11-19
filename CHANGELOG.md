@@ -4,10 +4,16 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [1.1.0] – 2026-11-19
+
 ### Added
 - Web view, **Settings** (proxy sign-in only): per-user notification targets (Apprise URLs, shown masked, with test and last result) and a weekly or monthly report schedule; the server sends due reports itself and catches up after downtime.
 - Only well-known services are allowed as targets; `WORKLOG_NOTIFY_ALLOW` / `WORKLOG_NOTIFY_DENY` change the list, the settings page shows it with links to each service's URL format.
 - `WORKLOG_SCHEDULER=off` to switch the scheduler off.
+
+### Upgrading
+- Migration 7 runs on start (new tables only); take a backup first (`worklog backup`).
+- Users who had reports sent by a cron job with `worklog report --notify` can move them to the web view; the command line keeps working.
 
 ## [1.0.0] – 2026-11-19
 
@@ -36,5 +42,6 @@ First release. Everything below is new.
 - Databases from before multi-user support need `WORKLOG_LEGACY_OWNER=<user>` once.
 - The CLI needs `--owner` for `token create`, `token revoke` and `export`.
 
-[Unreleased]: https://github.com/axute/worklog-mcp/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/axute/worklog-mcp/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/axute/worklog-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/axute/worklog-mcp/releases/tag/v1.0.0
