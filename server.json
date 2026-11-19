@@ -13,7 +13,6 @@
     {
       "registryType": "oci",
       "identifier": "ghcr.io/axute/worklog-mcp:1.1.0",
-      "version": "1.1.0",
       "runtimeHint": "docker",
       "transport": { "type": "stdio" },
       "runtimeArguments": [
