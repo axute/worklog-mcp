@@ -235,6 +235,45 @@ def create_server(db: Database, settings: Settings) -> FastMCP:
             f"Language of the entries: {language or 'the language the user writes in'}."
         )
 
+    @mcp.prompt(name="backfill_my_commits",
+                description="Log the history of the open project afterwards, from your own git commits only.")
+    def backfill_my_commits(
+        since: Annotated[str | None, Field(description="Only work from this date on, e.g. '2025-01-01'.")] = None,
+        language: Annotated[str | None, Field(description="Language of the entries, e.g. 'German'.")] = None,
+    ) -> str:
+        period = f" from {since} on" if since else ""
+        return (
+            f"Log the history of THIS project (the project or working directory that is open) into my work log, "
+            f"afterwards and with the real dates{period}. Only count work I did myself, i.e. only my commits.\n\n"
+            "1. Project name: take the name of the project or git repository (folder or remote name), lower case, "
+            "spaces as '-'. Check worklog list_projects for it, also under a similar name (without prefix or "
+            "suffix); if it exists, use exactly that name. If it is not clear, ask me.\n"
+            "2. Who am I: read `git config user.name` and `git config user.email`, show me "
+            "`git shortlog -sne --all` and mark which authors you think are me (also old e-mail addresses or "
+            "spellings). Wait until I confirm; from then on only commits of these identities count "
+            "(`git log --author=...` for each).\n"
+            "3. Check what is already logged: worklog list_entries with that project name and limit 500. "
+            "Do not log anything twice.\n"
+            "4. Reconstruct, read only, change nothing: `git log --reverse --date=iso --stat --author=...`, tags "
+            "and merges I was part of; CHANGELOG, README and docs only as context for my commits, never as entries "
+            "for work of others.\n"
+            "5. Group into results: one entry per finished feature, fix, configuration change or decision – not "
+            "one per commit. Small commits on the same topic and day belong together; formatting, merge and "
+            "version commits only go into the details.\n"
+            "6. Each entry: summary = one sentence about the result; details = the important commits (short hash), "
+            "files and reasons; ts = when it was finished (ISO datetime from the commit date); tags including "
+            "'backfill'; duration_min only if the commits show it (first to last commit of a short session on one "
+            "day), otherwise leave it out. Never invent work, dates or durations. No secrets (tokens, passwords, "
+            "keys, customer data), also not from commit messages, branch names or config files.\n"
+            "7. Preview: show me the planned entries first as a table (date, summary, tags, duration, number of "
+            "commits) and wait for my OK; apply my changes before writing.\n"
+            f"8. After my OK: write them with worklog log_entries (up to {LOG_MANY_MAX} per call), oldest first. "
+            "If an answer reports possible_duplicate_of, compare and tell me instead of deleting anything.\n"
+            "9. Finish with: number of entries, period covered, how many of my commits went in, and what you left "
+            "out and why.\n"
+            f"Language of the entries: {language or 'the language I write in'}."
+        )
+
     register_api(mcp, db, settings)
     register_webui(mcp, db, settings)
     return mcp

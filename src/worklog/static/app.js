@@ -29,7 +29,8 @@ const TEXT = {
     oneDupe: '1 possible duplicate: the same work seems to be logged more than once.',
     showDupes: 'Review', hideDupes: 'Hide', similar: 'similar ({0} %)', keepThis: 'Keep the selected one and merge',
     notDupe: 'Not a duplicate', mergeHelp: 'Details and tags are combined, the longest duration counts once, the others are deleted.',
-    backfilled: 'logged afterwards on {0}',
+    backfilled: 'logged afterwards on {0}', importJson: 'Import',
+    imported: 'Import: {0} new, {1} already there, {2} errors.', importFailed: 'Import failed: {0}',
     edit: 'Edit', del: 'Delete', save: 'Save', cancel: 'Cancel', summaryLbl: 'Summary', detailsLbl: 'Details',
     tagsLbl: 'Tags (comma separated)', minutesLbl: 'Minutes', deleteConfirm: 'Delete this entry? This cannot be undone.',
     renameProject: 'Rename project …', renamePrompt: 'New name for the project "{0}":',
@@ -61,7 +62,8 @@ const TEXT = {
     showDupes: 'Ansehen', hideDupes: 'Ausblenden', similar: 'ähnlich ({0} %)',
     keepThis: 'Ausgewählten behalten und zusammenführen', notDupe: 'Kein Duplikat',
     mergeHelp: 'Details und Tags werden zusammengelegt, die längste Dauer zählt einmal, die anderen werden gelöscht.',
-    backfilled: 'nachgetragen am {0}',
+    backfilled: 'nachgetragen am {0}', importJson: 'Import',
+    imported: 'Import: {0} neu, {1} schon vorhanden, {2} Fehler.', importFailed: 'Import fehlgeschlagen: {0}',
     edit: 'Bearbeiten', del: 'Löschen', save: 'Speichern', cancel: 'Abbrechen', summaryLbl: 'Zusammenfassung',
     detailsLbl: 'Details', tagsLbl: 'Tags (durch Komma getrennt)', minutesLbl: 'Minuten',
     deleteConfirm: 'Diesen Eintrag löschen? Das lässt sich nicht rückgängig machen.',
@@ -251,6 +253,8 @@ function syncControls() {
   const q = new URLSearchParams(Object.entries(filterParams()).filter(([, v]) => v !== '' && v != null));
   $('export-md').href = `api/export?${q}&format=md`;
   $('export-csv').href = `api/export?${q}&format=csv`;
+  $('export-json').href = `api/export?${q}&format=json`;
+  $('import-btn').hidden = !(me && me.can_edit);
   if (state.tab !== 'tokens') hideNewToken();   // a new token never lingers on other tabs
 }
 function changed() {
@@ -346,6 +350,30 @@ function entryRow(e) {
   body.append(meta);
   d.append(s, body);
   return d;
+}
+
+// ---------------------------------------------------------------- JSON import (proxy sign-in)
+
+async function importFile() {
+  const file = $('import-file').files[0];
+  $('import-file').value = '';
+  if (!file) return;
+  try {
+    const r = await fetch(new URL('api/import', location.href), {
+      method: 'POST', credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: await file.text(),
+    }).catch(proxyExpired);
+    if (r.status === 401) { showLogin(); return; }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    const errors = data.errors.length ? '\n' + data.errors.slice(0, 5).map((e) => `#${e.index}: ${e.error}`).join('\n') : '';
+    alert(t('imported', num(data.created), num(data.skipped + data.updated), num(data.errors.length)) + errors);
+    await loadFacets();
+    refresh();
+    loadDupes();
+  } catch (err) {
+    alert(t('importFailed', err.message));
+  }
 }
 
 // ---------------------------------------------------------------- duplicates
@@ -812,6 +840,8 @@ function init() {
 
   $('token-form').addEventListener('submit', onCreateToken);
   $('f-rename').addEventListener('click', renameProject);
+  $('import-btn').addEventListener('click', () => $('import-file').click());
+  $('import-file').addEventListener('change', importFile);
   $('dupes-toggle').addEventListener('click', () => { dupesOpen = !dupesOpen; renderDupes(); });
   $('token-copy').addEventListener('click', copyToken);
   $('token-done').addEventListener('click', hideNewToken);

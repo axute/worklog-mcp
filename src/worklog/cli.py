@@ -3,7 +3,8 @@
     worklog token create <name> --owner USER [--scopes write,read]
     worklog token list [--owner USER]
     worklog token revoke <name> --owner USER
-    worklog export --owner USER [--format md|csv] [--since DATE] [--until DATE] [--project P] [--output FILE]
+    worklog import --owner USER [--update] FILE|-          (JSON export from the web view or `export --format json`)
+    worklog export --owner USER [--format md|csv|json] [--since DATE] [--until DATE] [--project P] [--output FILE]
     worklog report --owner USER [--period last-week|this-week|last-month|this-month] [--project P] [--dir DIR]
     worklog backup [--dir DIR] [--keep 14]
 
@@ -14,6 +15,7 @@ reverse proxy (Authelia) the owner is the user name the proxy reports.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,7 +23,7 @@ from pathlib import Path
 from .auth import create_token
 from .config import Settings
 from .db import Database, utcnow
-from .report import PERIODS, period_bounds, summary_line, to_csv, to_markdown
+from .report import PERIODS, period_bounds, read_export, summary_line, to_csv, to_json, to_markdown
 
 
 def _local(value: str, tz) -> datetime:
@@ -53,11 +55,17 @@ def main(argv: list[str] | None = None) -> int:
 
     ex = sub.add_parser("export", help="export entries as Markdown or CSV")
     ex.add_argument("--owner", required=True, help="whose entries")
-    ex.add_argument("--format", choices=["md", "csv"], default="md")
+    ex.add_argument("--format", choices=["md", "csv", "json"], default="md",
+                    help="md: readable; json: for `worklog import` and other programs (no owner)")
     ex.add_argument("--since", help="ISO date, inclusive (default: everything)")
     ex.add_argument("--until", help="ISO date, exclusive (default: now)")
     ex.add_argument("--project")
     ex.add_argument("--output", "-o", help="file instead of stdout")
+
+    im = sub.add_parser("import", help="import a JSON export for a user (the owner in the file does not matter)")
+    im.add_argument("file", help="export file, or - for stdin (docker exec -i ... worklog import ... - < file.json)")
+    im.add_argument("--owner", required=True, help="user the entries belong to after the import")
+    im.add_argument("--update", action="store_true", help="overwrite entries that were imported before")
 
     rp = sub.add_parser("report", help="Markdown report of a week or month, e.g. for a weekly notification")
     rp.add_argument("--owner", required=True, help="whose entries")
@@ -101,12 +109,29 @@ def main(argv: list[str] | None = None) -> int:
             since = _local(args.since, tz) if args.since else datetime(1970, 1, 1, tzinfo=tz)
             until = _local(args.until, tz) if args.until else utcnow() + timedelta(seconds=1)
             entries = db.entries_between(since, until, owner=args.owner, project=args.project)
-            text = to_csv(entries, tz) if args.format == "csv" else to_markdown(entries, tz)
+            if args.format == "json":
+                text = to_json(entries, tz, db.instance_id(), {"since": args.since, "until": args.until,
+                                                               "project": args.project})
+            else:
+                text = to_csv(entries, tz) if args.format == "csv" else to_markdown(entries, tz)
             if args.output:
                 Path(args.output).write_text(text, encoding="utf-8")
                 print(f"{len(entries)} entries written to {args.output}", file=sys.stderr)
             else:
                 sys.stdout.write(text)
+        elif args.command == "import":
+            raw = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8")
+            try:
+                items = read_export(json.loads(raw))
+            except json.JSONDecodeError as e:
+                raise ValueError(f"not valid JSON: {e}") from None
+            result = db.import_export(args.owner, items, update=args.update)
+            print(f"created {result['created']}, updated {result['updated']}, skipped {result['skipped']}, "
+                  f"errors {len(result['errors'])}")
+            for err in result["errors"][:20]:
+                print(f"  entry {err['index']}: {err['error']}", file=sys.stderr)
+            if result["errors"]:
+                return 1
         elif args.command == "report":
             start, end, label = period_bounds(args.period, tz)
             entries = db.entries_between(start, end, owner=args.owner, project=args.project)

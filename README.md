@@ -270,6 +270,7 @@ Scopes: `write` is needed for `log_entry`, `log_entries` and `update_entry`, `re
 |---|---|---|
 | `weekly_report` | `weeks_ago` (0 = this week, default 1 = last week), optional `project`, `language` | asks the model to call `summarize_period` for that calendar week (Monday to Sunday) and write a short report from it |
 | `monthly_report` | `months_ago` (default 1), optional `project`, `language` | the same for a calendar month |
+| `backfill_my_commits` | optional `since`, `language` | the same for the project that is open, from your own commits only: finds the project name (and an existing one in the log), asks which git authors are you, shows a preview and waits for your OK before writing |
 | `backfill_project` | `project`, optional `source` (e.g. a repository path), `since`, `language` | logs the history of an earlier project afterwards: checks what is logged already, reads the git history, changelog and docs, groups them into results and writes them with `log_entries` and the real dates (tagged `backfill`; nothing invented, durations only where the sources show them) |
 
 ## Web view
@@ -278,7 +279,8 @@ Scopes: `write` is needed for `log_entry`, `log_entries` and `update_entry`, `re
 
 - **Entries:** newest first, grouped by day, with full text search and filters for project, agent, source and period. Click an entry for details and tags, click a project to filter by it. Filters are kept in the URL, so a view can be bookmarked.
 - **Overview:** totals, time or entries per project, and a chart per day, week or month (chosen by the length of the period), also available as a table.
-- **Export:** the current filter as Markdown or CSV download (links above the list).
+- **Export:** the current filter as Markdown, CSV or JSON download (links above the list).
+- **Import** (proxy sign-in): a JSON export, e.g. from another worklog instance, becomes part of your log. See [JSON export and import](#json-export-and-import).
 - **Duplicates:** entries that look like the same work logged twice (same project, at most 3 hours apart, nearly the same summary; summaries with different numbers never count) are shown above the list. Pick the one to keep and merge: details and tags are combined, the longest duration counts once, the earliest time stays, the others are deleted. *Not a duplicate* hides the group for good. Merging needs the proxy sign-in.
 - **Corrections** (only after signing in through the proxy, see below): edit or delete an entry (open it, then *Edit* / *Delete*); with a project filter set, *Rename project …* renames it, or merges it into an existing project.
 - **Tokens** (only after signing in through the proxy): create your tokens, see when each was last used, revoke them. A new token is shown once.
@@ -362,8 +364,35 @@ Tokens look like `wl_…` (32 random bytes). Store them in a password manager or
 ```bash
 worklog export --owner alice --since 2026-11-09 --until 2026-11-16   # Markdown, grouped by day and project
 worklog export --owner alice --format csv --project website -o website.csv
+worklog export --owner alice --format json -o worklog.json               # machine-readable, see below
 worklog backup --keep 14   # consistent copy to backups/ next to the database, keeps the newest 14
 ```
+
+### JSON export and import
+
+The JSON export is meant for programs and for moving entries between instances (e.g. from the one at work to the one at home):
+
+```bash
+worklog export --owner alice --format json -o worklog.json              # or "JSON" in the web view
+docker exec -i worklog-mcp worklog import --owner bob - < worklog.json   # or "Import" in the web view
+```
+
+```json
+{
+  "format": "worklog-export", "version": 1, "exported_at": "2026-11-19T09:00:00+01:00",
+  "timezone": "Europe/Berlin", "filters": {"project": "website"},
+  "entries": [
+    {"external_id": "worklog:3f9c0a1b2c3d4e5f:812", "ts": "2026-11-10T10:00:00+01:00",
+     "created_at": "2026-11-10T10:02:13+01:00", "agent": "laptop", "source": "tool",
+     "project": "website", "summary": "Startseite gebaut", "details": null,
+     "tags": ["deploy"], "duration_min": 30, "session_id": null}
+  ]
+}
+```
+
+- The file contains no owner and no database ids. On import the entries belong to the importing user (the web view's sign-in, or `--owner`); agent, source, times and contents are kept.
+- Imports are repeatable: `external_id` is the entry's import id, or `worklog:<instance>:<id>` for entries written directly, and known ids are skipped (`--update` / `?update=true` overwrites them). Importing an export back into the instance it came from skips entries that still exist. Entries without `external_id` (hand-written files) get one derived from time, project and summary.
+- Required per entry: `ts`, `project`, `summary`; everything else is optional. A plain JSON list of entries is accepted too.
 
 **Weekly report:** `worklog report --owner alice --period last-week` prints the Markdown report of the last calendar week (`this-week`, `last-month`, `this-month` also work). With `--dir DIR` it writes `worklog-alice-2026-W46.md` there instead and prints one line for a notification, e.g. `2026-W46: 42 entries, 31.5 h, 7 projects (top: website, heimnetz, unraid)`. Run it every Monday morning, e.g. via cron or the Unraid User Scripts plugin:
 

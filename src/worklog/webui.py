@@ -13,7 +13,8 @@
     GET  /ui/api/duplicates         groups of entries that were probably logged twice
     POST /ui/api/duplicates/merge   {"keep": id, "remove": [ids]}                 (proxy sign-in)
     POST /ui/api/duplicates/ignore  {"ids": [ids]}: "not a duplicate", never shown again (proxy sign-in)
-    GET  /ui/api/export             same filters as /ui/api/entries, format=md|csv -> file download
+    GET  /ui/api/export             same filters as /ui/api/entries, format=md|csv|json -> file download
+    POST /ui/api/import             a JSON export (owner = the signed-in user); ?update=true overwrites (proxy sign-in)
     GET  /ui/api/tokens             own tokens (proxy sign-in)
     POST /ui/api/tokens             {"name", "scopes"} -> new own token, shown once (proxy sign-in)
     POST /ui/api/tokens/{name}/revoke  revoke an own token (proxy sign-in)
@@ -53,11 +54,12 @@ from .auth import (NAME_RE, SESSION_COOKIE, SESSION_TTL, check_session, check_to
 from .config import Settings
 from .db import SCOPES, Database, as_dict
 from .dupes import find_groups
-from .report import stats, to_csv, to_markdown
+from .report import read_export, stats, to_csv, to_json, to_markdown
 
 log = logging.getLogger("worklog.webui")
 
 PROXY_HEADER = "x-worklog-proxy"
+IMPORT_MAX = 50 * 1024 * 1024  # a JSON export of ~100,000 entries
 PROXY_SECRET_MIN = 24
 STATIC = Path(__file__).parent / "static"
 FILES = {
@@ -247,8 +249,8 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         if err:
             return err
         fmt = request.query_params.get("format", "md")
-        if fmt not in ("md", "csv"):
-            return _json({"error": "format must be md or csv"}, 400)
+        if fmt not in ("md", "csv", "json"):
+            return _json({"error": "format must be md, csv or json"}, 400)
         try:
             f = filters(request)
         except ValueError as e:
@@ -258,7 +260,9 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
         span = "-".join(x.astimezone(tz).strftime("%Y%m%d") for x in (f["since"], f["until"]) if x) or "all"
         name = "-".join(filter(None, ["worklog", f["project"], span]))
         name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name) + "." + fmt
-        if fmt == "csv":
+        if fmt == "json":
+            body, media = to_json(entries, tz, db.instance_id(), f), "application/json; charset=utf-8"
+        elif fmt == "csv":
             body, media = to_csv(entries, tz), "text/csv; charset=utf-8"
         else:
             body, media = to_markdown(entries, tz, title=f"Work log {who.owner}"), "text/markdown; charset=utf-8"
@@ -304,6 +308,24 @@ def register_webui(mcp: FastMCP, db: Database, settings: Settings) -> None:
             return _json({"error": "unknown entry"}, 404)
         log.info("entry_deleted", extra={"entry_id": entry_id, "by": who.owner, "source": "web"})
         return _json({"deleted": entry_id})
+
+    @mcp.custom_route("/ui/api/import", methods=["POST"], include_in_schema=False)
+    async def import_json(request: Request) -> Response:
+        who, err = manager(request, change=True)
+        if err:
+            return err
+        body = await request.body()
+        if len(body) > IMPORT_MAX:
+            return _json({"error": f"file larger than {IMPORT_MAX // 1024 // 1024} MB"}, 413)
+        try:
+            items = read_export(json.loads(body or b"null"))
+        except ValueError as e:  # includes JSONDecodeError
+            return _json({"error": str(e)}, 400)
+        update = request.query_params.get("update", "").lower() in ("1", "true", "yes")
+        result = db.import_export(who.owner, items, update=update)
+        log.info("json_import", extra={"by": who.owner, "status": {
+            k: (len(v) if isinstance(v, list) else v) for k, v in result.items()}})
+        return _json({**result, "errors": result["errors"][:50]})
 
     @mcp.custom_route("/ui/api/duplicates", methods=["GET"], include_in_schema=False)
     async def duplicates(request: Request) -> Response:

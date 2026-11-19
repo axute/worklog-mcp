@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from collections import OrderedDict
 from datetime import datetime, time, timedelta
 from typing import Any
@@ -150,3 +151,46 @@ def summary_line(entries: list[Entry], label: str) -> str:
     hours = f"{minutes / 60:.1f}".rstrip("0").rstrip(".")
     line = f"{label}: {len(entries)} entries, {hours} h, {len(per_project)} projects"
     return line + (f" (top: {', '.join(top)})" if top else "")
+
+
+EXPORT_FORMAT = "worklog-export"
+EXPORT_VERSION = 1
+
+
+def to_json(entries: list[Entry], tz, instance: str, filters: dict[str, Any] | None = None) -> str:
+    """Machine-readable export without owner and database ids; `worklog import` and the web view
+    read it back. external_id keeps imports repeatable: an existing import id, or
+    worklog:<instance>:<id> for entries written directly."""
+    return json.dumps({
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "exported_at": datetime.now(tz).isoformat(timespec="seconds"),
+        "timezone": str(tz),
+        "filters": {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in (filters or {}).items() if v},
+        "entries": [{
+            "external_id": e.external_id or f"worklog:{instance}:{e.id}",
+            "ts": e.ts.astimezone(tz).isoformat(),
+            "created_at": e.created_at.astimezone(tz).isoformat(),
+            "agent": e.agent,
+            "source": e.source,
+            "project": e.project,
+            "summary": e.summary,
+            "details": e.details,
+            "tags": e.tags,
+            "duration_min": e.duration_min,
+            "session_id": e.session_id,
+        } for e in entries],
+    }, ensure_ascii=False, indent=1) + "\n"
+
+
+def read_export(data: Any) -> list[Any]:
+    """Entries of a JSON export (or a plain list of entries)."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        raise ValueError("expected a worklog export: {\"format\": \"worklog-export\", \"entries\": [...]}")
+    if data.get("format") not in (None, EXPORT_FORMAT):
+        raise ValueError(f"unknown format {data.get('format')!r}")
+    if int(data.get("version") or 1) > EXPORT_VERSION:
+        raise ValueError(f"export version {data.get('version')} is newer than this server understands")
+    return data["entries"]

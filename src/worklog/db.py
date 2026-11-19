@@ -735,6 +735,56 @@ class Database:
                                (f"secret:{name}", secrets.token_hex(32)))
             return self._conn.execute("SELECT value FROM meta WHERE key = ?", (f"secret:{name}",)).fetchone()[0]
 
+    def instance_id(self) -> str:
+        """Random id of this database, part of the external ids of exported entries."""
+        return self.get_secret("instance")[:16]
+
+    def import_export(self, owner: str, items: list[dict[str, Any]], *, update: bool = False) -> dict[str, Any]:
+        """Import entries of a JSON export (see report.to_json) for `owner`.
+
+        Agent, source, times and contents are kept; the owner is always the importing user.
+        external_id makes it repeatable: known ids are skipped (or overwritten with update=True),
+        and entries exported from this same database that still exist are skipped too."""
+        owner = clean_owner(owner)
+        own_prefix = f"worklog:{self.instance_id()}:"
+        result: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for i, item in enumerate(items):
+                    try:
+                        row = _export_row(item)
+                    except (ValueError, TypeError, KeyError) as e:
+                        result["errors"].append({"index": i, "error": str(e)})
+                        continue
+                    ext = row["external_id"]
+                    if ext.startswith(own_prefix) and ext[len(own_prefix):].isdigit() and self._conn.execute(
+                            "SELECT 1 FROM entries WHERE owner = ? AND id = ?", (owner, int(ext[len(own_prefix):]))
+                    ).fetchone():
+                        result["skipped"] += 1  # the original is still here
+                        continue
+                    existing = self._conn.execute("SELECT id FROM entries WHERE owner = ? AND external_id = ?",
+                                                  (owner, ext)).fetchone()
+                    cols = ("ts", "created_at", "agent", "source", "project", "summary", "details", "tags",
+                            "duration_min", "session_id")
+                    if existing and not update:
+                        result["skipped"] += 1
+                    elif existing:
+                        self._conn.execute(f"UPDATE entries SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?",
+                                           (*(row[c] for c in cols), existing["id"]))
+                        result["updated"] += 1
+                    else:
+                        self._conn.execute(
+                            f"INSERT INTO entries (owner, external_id, {', '.join(cols)}) "
+                            f"VALUES (?, ?, {', '.join('?' * len(cols))})",
+                            (owner, ext, *(row[c] for c in cols)))
+                        result["created"] += 1
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return result
+
     def find_token_by_hash(self, token_hash: str) -> TokenRecord | None:
         with self._lock:
             row = self._conn.execute("SELECT * FROM tokens WHERE token_hash = ?", (token_hash,)).fetchone()
@@ -773,6 +823,51 @@ def fts_query(query: str) -> str:
     """User text -> safe FTS5 query: every word as a quoted prefix term, all required."""
     words = re.findall(r"\w+", query or "", flags=re.UNICODE)
     return " ".join(f'"{w}"*' for w in words)
+
+
+AGENT_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def _export_row(item: dict[str, Any]) -> dict[str, Any]:
+    """One entry of a JSON export -> column values. Without external_id one is derived from
+    time, project and summary, so importing the same file twice still creates nothing twice."""
+    if not isinstance(item, dict):
+        raise TypeError("entry must be an object")
+    if not item.get("ts"):
+        raise ValueError("ts is required")
+    ts = to_db_ts(parse_ts(str(item["ts"])))
+    project = str(item.get("project") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    if not project:
+        raise ValueError("project must not be empty")
+    if not summary or len(summary) > SUMMARY_MAX:
+        raise ValueError(f"summary must have 1-{SUMMARY_MAX} characters")
+    source = str(item.get("source") or "import")
+    if source not in SOURCES:
+        raise ValueError(f"source must be one of {', '.join(SOURCES)}")
+    agent = str(item.get("agent") or "import")
+    if not AGENT_RE.fullmatch(agent):
+        raise ValueError("agent: 1-64 characters, letters, digits, '-', '_' or '.'")
+    duration = item.get("duration_min")
+    if duration is not None and (not isinstance(duration, int) or isinstance(duration, bool) or duration < 0):
+        raise ValueError("duration_min must be a non-negative integer")
+    tags = item.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        raise TypeError("tags must be a list")
+    tag_list = _clean_tags(tags)
+    external_id = str(item.get("external_id") or "").strip()
+    if not external_id:
+        import hashlib
+        external_id = "json:" + hashlib.sha1(f"{ts}|{project}|{summary}".encode("utf-8")).hexdigest()[:16]
+    if len(external_id) > 200:
+        raise ValueError("external_id is longer than 200 characters")
+    created = to_db_ts(parse_ts(str(item["created_at"]))) if item.get("created_at") else to_db_ts(utcnow())
+    return {
+        "external_id": external_id, "ts": ts, "created_at": created, "agent": agent, "source": source,
+        "project": project, "summary": summary, "details": (str(item["details"]) if item.get("details") else None),
+        "tags": json.dumps(tag_list, ensure_ascii=False) if tag_list else None, "duration_min": duration,
+        "session_id": (str(item["session_id"]) if item.get("session_id") else None),
+    }
 
 
 def _import_row(item: dict[str, Any]) -> dict[str, Any]:
