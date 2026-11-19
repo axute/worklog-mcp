@@ -8,11 +8,11 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/axute/worklog-mcp#readme",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/axute/worklog-mcp:1.1.0",
+      "identifier": "ghcr.io/axute/worklog-mcp:1.1.1",
       "runtimeHint": "docker",
       "transport": { "type": "stdio" },
       "runtimeArguments": [

@@ -4,6 +4,8 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [1.1.1] – 2026-11-19
+
 ### Changed
 - Clearer error for notification URLs with unencoded special characters (e.g. an e-mail address as user name: `@` must be `%40`).
 - Release tags publish `server.json` to the MCP Registry automatically (GitHub OIDC, no manual login); the version comes from the tag.
@@ -46,6 +48,7 @@ First release. Everything below is new.
 - Databases from before multi-user support need `WORKLOG_LEGACY_OWNER=<user>` once.
 - The CLI needs `--owner` for `token create`, `token revoke` and `export`.
 
-[Unreleased]: https://github.com/axute/worklog-mcp/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/axute/worklog-mcp/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/axute/worklog-mcp/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/axute/worklog-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/axute/worklog-mcp/releases/tag/v1.0.0
